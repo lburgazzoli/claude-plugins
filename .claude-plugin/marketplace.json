@@ -7,5 +7,14 @@
     "description": "Personal marketplace for Claude Code skills, hooks, and MCP servers",
     "version": "0.1.0"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "lburgazzoli-skills",
+      "description": "Collection of personal skills including testcontainers guidance",
+      "source": "./",
+      "skills": [
+        "./skills/testcontainers"
+      ]
+    }
+  ]
 }
