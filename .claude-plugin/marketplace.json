@@ -1,0 +1,11 @@
+{
+  "name": "lburgazzoli",
+  "owner": {
+    "name": "lburgazzoli"
+  },
+  "metadata": {
+    "description": "Personal marketplace for Claude Code skills, hooks, and MCP servers",
+    "version": "0.1.0"
+  },
+  "plugins": []
+}
