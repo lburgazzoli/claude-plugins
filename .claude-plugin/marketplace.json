@@ -9,9 +9,13 @@
   },
   "plugins": [
     {
-      "name": "lburgazzoli-skills",
-      "description": "Collection of personal skills including testcontainers guidance",
+      "name": "lb",
+      "description": "Collection of personal commands and skills",
       "source": "./",
+      "commands": [
+        "./commands/code-review.md",
+        "./commands/k8s-code-review.md"
+      ],
       "skills": [
         "./skills/testcontainers"
       ]
