@@ -1,4 +1,4 @@
-# lburgazzolim
+# lburgazzoli
 
 A personal marketplace for Claude Code skills, hooks, and MCP servers.
 
@@ -6,99 +6,79 @@ A personal marketplace for Claude Code skills, hooks, and MCP servers.
 
 This repository serves as a centralized marketplace for custom Claude Code extensions:
 
-- **Skills**: Custom commands and workflows for Claude Code
+- **Skills**: Contextual knowledge and instructions for specific tools/frameworks
 - **Hooks**: Event-driven scripts that respond to Claude Code events
 - **MCP Servers**: Model Context Protocol servers that extend Claude's capabilities
 
-## Quick Start
+## Installation
 
-### List Available Plugins
-
-```bash
-./scripts/list-plugins.sh
-```
-
-### Install a Skill
+Install the marketplace plugin:
 
 ```bash
-./scripts/install-skill.sh skills/example-skill.md
+claude plugin install <repo-url>
 ```
 
-Then use it in Claude Code:
-
-```
-/example-skill
-```
-
-### Uninstall a Skill
+Or test locally:
 
 ```bash
-./scripts/uninstall-skill.sh example-skill
+claude --plugin-dir /path/to/claude-plugins
 ```
+
+## Available Skills
+
+| Skill | Description |
+|-------|-------------|
+| `testcontainers` | Guidance for running tests with Testcontainers and Podman/Docker |
 
 ## Directory Structure
 
 ```
 .
-├── skills/              # Custom Claude Code skills
-├── hooks/               # Event-driven hooks
-├── mcp-servers/         # MCP server configurations
-├── scripts/             # Installation and management scripts
-├── marketplace.json     # Marketplace metadata
-└── registry.json        # Plugin registry
+├── .claude-plugin/
+│   ├── plugin.json          # Plugin manifest
+│   └── marketplace.json     # Marketplace catalog
+├── skills/                  # Skill definitions (auto-discovered)
+├── hooks/                   # Hook scripts (optional)
+├── CLAUDE.md               # Project instructions for Claude Code
+└── README.md
 ```
 
-## Creating Your Own Plugins
+## Creating New Extensions
 
 ### Skills
 
-1. Create a new markdown file in `skills/`
-2. Follow the structure in `skills/example-skill.md`
-3. Add an entry to `registry.json`
-4. Install with `./scripts/install-skill.sh`
+Create a directory in `skills/` with a `SKILL.md` file:
 
-See [skills/README.md](skills/README.md) for details.
+```markdown
+---
+name: my-skill
+description: What the skill provides
+---
+
+Skill content and instructions...
+```
 
 ### Hooks
 
-1. Create a shell script in `hooks/`
-2. Make it executable: `chmod +x hooks/your-hook.sh`
-3. Configure in `~/.claude/settings.json`
-
-See [hooks/README.md](hooks/README.md) for details.
+Add hook scripts to `hooks/` and configure in `hooks/hooks.json`.
 
 ### MCP Servers
 
-1. Create a configuration file in `mcp-servers/`
-2. Document installation and setup
-3. Configure in `~/.claude/settings.json`
+Configure in `.mcp.json` at the repository root.
 
-See [mcp-servers/README.md](mcp-servers/README.md) for details.
+## Development
 
-## Registry Format
+Test changes locally:
 
-The `registry.json` file tracks all available plugins:
-
-```json
-{
-  "plugins": [
-    {
-      "name": "plugin-name",
-      "type": "skill",
-      "path": "skills/plugin-name.md",
-      "description": "What the plugin does",
-      "version": "1.0.0",
-      "category": "utilities",
-      "author": "lburgazzoli",
-      "installPath": "~/.claude/skills/plugin-name.md"
-    }
-  ]
-}
+```bash
+claude --plugin-dir .
 ```
 
-## Contributing
+Reload after changes:
 
-This is a personal marketplace, but feel free to fork and create your own!
+```
+/reload-plugins
+```
 
 ## License
 

@@ -11,14 +11,7 @@
     {
       "name": "lb",
       "description": "Collection of personal commands and skills",
-      "source": "./",
-      "commands": [
-        "./commands/code-review.md",
-        "./commands/k8s-code-review.md"
-      ],
-      "skills": [
-        "./skills/testcontainers"
-      ]
+      "source": "./"
     }
   ]
 }

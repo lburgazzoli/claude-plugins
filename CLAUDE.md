@@ -4,143 +4,71 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**lburgazzolim** is a personal marketplace for Claude Code extensions including skills, hooks, and MCP servers. It provides a structured way to manage and distribute custom Claude Code plugins.
+**lburgazzoli** is a personal marketplace for Claude Code extensions including skills, hooks, and MCP servers. It provides a structured way to manage and distribute custom Claude Code plugins.
 
 ## Repository Structure
 
 ```
-├── skills/              # Claude Code skill definitions (markdown files)
-├── hooks/               # Event-driven hook scripts
-├── mcp-servers/         # MCP server configurations and documentation
-├── scripts/             # Management utilities (install, uninstall, list)
-├── marketplace.json     # Marketplace metadata and configuration
-├── registry.json        # Central registry of all available plugins
-└── README.md           # User-facing documentation
+├── .claude-plugin/
+│   ├── plugin.json              # Plugin manifest (name, version, author)
+│   └── marketplace.json         # Marketplace catalog
+├── skills/                      # Claude Code skill definitions (directory per skill with SKILL.md)
+├── hooks/                       # Event-driven hook scripts (hooks.json when populated)
+├── CLAUDE.md
+└── README.md
 ```
 
 ## Core Architecture
 
-### Plugin Registry System
+### Plugin System
 
-The `registry.json` file is the source of truth for all available plugins. Each entry contains:
-- `name`: Unique identifier
-- `type`: Plugin type (skill, hook, mcp-server)
-- `path`: Relative path to the plugin file
-- `description`: What the plugin does
-- `version`: Semantic version
-- `category`: Organization category
-- `author`: Plugin author
-- `installPath`: Where the plugin gets installed
+This repo serves as both a **marketplace** (`.claude-plugin/marketplace.json`) and a **plugin** (`.claude-plugin/plugin.json`). The marketplace references the plugin via `"source": "./"`.
+
+- **Plugin manifest** (`.claude-plugin/plugin.json`): Defines the plugin identity. Only `name` is required.
+- **Marketplace catalog** (`.claude-plugin/marketplace.json`): Lists available plugins with `name`, `owner`, and `plugins` array.
+- Components (skills) in default directories are **auto-discovered** — no need to list them explicitly.
 
 ### Skills
 
-Skills are markdown files that contain prompts/instructions for Claude Code. They:
-- Live in the `skills/` directory
-- Follow a structured format (metadata, usage, implementation)
-- Get installed to `~/.claude/skills/`
-- Are invoked using `/skill-name` in Claude Code
+Skills are directories containing a `SKILL.md` file with YAML frontmatter. They:
+- Live in the `skills/` directory (e.g., `skills/testcontainers/SKILL.md`)
+- Are auto-discovered from the default directory
 
 ### Hooks
 
-Hooks are shell scripts that execute on Claude Code events. They:
+Hooks are configured via `hooks/hooks.json`. They:
 - Live in the `hooks/` directory
 - Must be executable (`chmod +x`)
-- Are configured in `~/.claude/settings.json`
 - Respond to events like tool calls, prompt submissions, etc.
 
 ### MCP Servers
 
-MCP servers extend Claude Code with custom tools and context. They:
-- Have configuration documented in `mcp-servers/`
-- Are configured in `~/.claude/settings.json` under `mcpServers`
+MCP servers are configured via `.mcp.json` at the plugin root. They:
+- Extend Claude Code with custom tools and context
 - Can be written in any language (Node.js, Python, etc.)
-
-## Common Commands
-
-### List all available plugins
-```bash
-./scripts/list-plugins.sh
-```
-
-### Install a skill
-```bash
-./scripts/install-skill.sh skills/<skill-name>.md
-```
-
-### Uninstall a skill
-```bash
-./scripts/uninstall-skill.sh <skill-name>
-```
-
-### Make scripts executable (if needed)
-```bash
-chmod +x scripts/*.sh
-```
 
 ## Adding New Plugins
 
 ### Adding a Skill
 
-1. Create `skills/your-skill.md` following the example-skill structure
-2. Add entry to `registry.json` in the `plugins` array
-3. Test installation: `./scripts/install-skill.sh skills/your-skill.md`
-4. Verify in Claude Code: `/your-skill`
+1. Create `skills/your-skill/SKILL.md` with YAML frontmatter (`name`, `description`)
+2. Test with `claude --plugin-dir .`
+3. Verify with `/reload-plugins`
 
 ### Adding a Hook
 
-1. Create `hooks/your-hook.sh` with proper shebang
+1. Create the hook script in `hooks/`
 2. Make executable: `chmod +x hooks/your-hook.sh`
-3. Document the hook's purpose and event trigger
-4. Add entry to `registry.json` in the `hooks` array
-5. Provide installation instructions in the hook's README
+3. Add configuration to `hooks/hooks.json`
 
 ### Adding an MCP Server
 
-1. Document server configuration in `mcp-servers/`
-2. Include setup instructions and environment variables
-3. Add entry to `registry.json` in the `mcpServers` array
-4. Provide example settings.json configuration
+1. Create `.mcp.json` at the plugin root
+2. Define server configuration with command and args
 
 ## Development Guidelines
 
 - Keep skills focused on a single task
 - Document all environment variables and dependencies
-- Version all plugins semantically
-- Update registry.json when adding/modifying plugins
-- Test installations before committing
-- Skills should be self-contained and portable
-
-## File Formats
-
-### Skill Structure
-```markdown
-# Skill Name
-
-Description
-
-## Metadata
-- **Name**: skill-name
-- **Description**: What it does
-- **Category**: category
-- **Version**: x.y.z
-
-## Usage
-/skill-name [args]
-
-## Implementation
-[Claude instructions]
-```
-
-### Registry Entry
-```json
-{
-  "name": "plugin-name",
-  "type": "skill|hook|mcp-server",
-  "path": "category/plugin-name.ext",
-  "description": "Brief description",
-  "version": "1.0.0",
-  "category": "utilities",
-  "author": "lburgazzoli",
-  "installPath": "~/.claude/skills/plugin-name.md"
-}
-```
+- Test with `claude --plugin-dir .` before committing
+- Use `/reload-plugins` to hot-reload during development
