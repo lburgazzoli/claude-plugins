@@ -148,15 +148,19 @@ Use these upstream references as the authoritative source for conventions:
 
 ### 10. Cache Consistency and Client Type Alignment
 
-controller-runtime maintains separate caches for typed, unstructured, and partial (PartialObjectMetadata) objects. Mixing client types for the same resource causes redundant watches, cache misses, or runtime panics.
+controller-runtime's `delegatingByGVKCache` routes cache lookups by **GVK, not by Go type**. When `cache.Options.ByObject` is configured with a typed object (e.g., `&appsv1.Deployment{}`), the GVK is extracted via `apiutil.GVKForObject`. An unstructured object with the same GVK (e.g., an `*unstructured.Unstructured` with `apiVersion: apps/v1, kind: Deployment`) resolves to the **same per-GVK cache**. This means `ByObject` settings (label selectors, field selectors, transforms) apply equally to typed, unstructured, and metadata access for that GVK.
 
-**Client type consistency:**
-- If a resource is watched or owned as `Unstructured`, all Get/List/Watch calls for that resource must also use `Unstructured` — never mix typed and unstructured access for the same GVK
-- If a resource is watched or owned as a typed object (e.g., `&appsv1.Deployment{}`), all Get/List calls must use the same typed object
-- If using `PartialObjectMetadata`, the cache must be explicitly configured to handle that GVK as metadata-only (via `cache.Options.ByObject` or `cache.Options.DefaultTransform`)
+However, within a single cache instance, controller-runtime maintains **separate informer tracker maps** (`tracker.Structured`, `tracker.Unstructured`, `tracker.Metadata`), keyed by `runtime.Object` type via `informersByType()`. If the same GVK is accessed as both typed and unstructured, **two separate informers** (and two API server watch connections) are created within the same per-GVK cache — both with the same selector config, but consuming duplicate memory and watch resources.
+
+**Avoid duplicate informers for the same GVK:**
+- Pick one access pattern (typed, unstructured, or metadata) per GVK and use it consistently across watches, Get, and List calls
+- If a resource is watched as `Unstructured` (e.g., via dynamic `source.Kind` with an unstructured object), reads for that resource should also use the unstructured cache (via the controller-runtime cached client with an unstructured object), not a typed clientset
+- If a resource is watched as a typed object (e.g., `&appsv1.Deployment{}` via `.Owns()` or `.Watches()`), reads should use the typed cache
+- Mixing types does not cause panics or cache misses — both informers receive the correct selector config — but it wastes memory and API server watch connections
+- Reading via a raw kubernetes clientset (e.g., `client.AppsV1().Deployments().List()`) bypasses the cache entirely and hits the API server directly — prefer the controller-runtime cached client
 
 **Cache configuration alignment:**
-- If `Unstructured` objects are used, verify the manager's cache is configured to support unstructured caching for those GVKs
+- `cache.Options.ByObject` entries are matched by GVK, so they apply regardless of whether the access is typed or unstructured — no special unstructured cache configuration is needed
 - Every `client.Get()` or `client.List()` call on a resource must have a corresponding Watch (via `.Watches()`, `.Owns()`, or `.For()`) or explicit cache configuration — otherwise the informer cache is not populated and reads will fail or hit the API server directly
 - If a resource is only read (Get/List) but never watched, it either needs a watch added or should use a direct (non-cached) client explicitly
 
