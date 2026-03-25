@@ -27,11 +27,15 @@ Use these upstream references as the authoritative source for conventions:
 - [Structured Logging Migration](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/migration-to-structured-logging.md)
 - [client-go](https://github.com/kubernetes-sigs/controller-runtime)
 - [Server-Side Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
+- [Controller Development Pitfalls](https://ahmet.im/blog/controller-pitfalls/)
+- [CRD Generation Pitfalls](https://ahmet.im/blog/crd-generation-pitfalls/)
 
 ## Assessment Areas
 
 ### 1. Reconciliation Idempotency and State Handling
 
+- Each controller should have a single responsibility with clear inputs/outputs — follow Unix philosophy where each controller does one thing well
+- Adopt a consistent reconcile structure: fetch resource, handle finalization, initialize conditions, reconcile, patch status (Knative pattern)
 - Reconcile function produces the same result regardless of how many times it runs for the same input state
 - State is reconstructed from observed state, not cached or assumed from previous reconciliation
 - No side effects on no-op reconciliations (no unnecessary updates, patches, or event emissions)
@@ -46,6 +50,7 @@ Use these upstream references as the authoritative source for conventions:
 - Permanent errors (invalid spec, missing referenced resource) update status conditions without returning error
 - Uses `ctrl.Result{RequeueAfter: duration}` for time-based scheduling instead of polling loops
 - Uses `ctrl.Result{}` with nil error for graceful stop (no unnecessary requeue)
+- Do not use `Requeue: true` as a substitute for returning an error — return errors directly for failures (controller-runtime handles requeue with backoff automatically); reserve `Requeue: true` for in-progress operations that need default backoff without an error
 - Never silently swallows errors — either returns them, logs them, or records them in status
 - Wraps errors with `fmt.Errorf("context: %w", err)` for debuggable error chains
 
@@ -54,12 +59,13 @@ Use these upstream references as the authoritative source for conventions:
 - Minimizes API server calls: uses cached client for reads, direct client only when strong consistency is needed
 - Uses field indexers (`mgr.GetFieldIndexer().IndexField()`) for efficient filtered list operations
 - Batches related operations where possible
-- Avoids unnecessary status updates (compares before updating)
+- Avoids unnecessary status updates (compares before updating); avoids expensive operations (external API calls, status updates) on every reconciliation when nothing changed — use `status.observedGeneration` to detect if actual work is needed
 - Uses Server-Side Apply (SSA) where appropriate with descriptive `fieldManager` names
 - When using SSA: includes all managed fields in each Apply, omits unmanaged fields, handles conflicts gracefully
 - Does not manually edit `.metadata.managedFields`
 - Uses `ctrl.SetControllerReference()` for ownership, letting garbage collector handle cleanup
 - Declares `.Owns()` in controller setup for automatic watch on owned resources
+- Set `ReaderFailOnMissingInformer: true` on the manager to prevent hidden on-the-fly informer creation from undeclared resource queries
 
 ### 4. RBAC Least Privilege and Security
 
@@ -144,6 +150,9 @@ Use these upstream references as the authoritative source for conventions:
 - `GenerationChangedPredicate` skips reconciliation for metadata-only changes (e.g., label updates not relevant to the controller)
 - Does not block reconciliation with long-running operations (offload to jobs or async)
 - Rate limiting is configured appropriately for the controller's workload
+- Monitor reconciliation latency and queue depth; understand that periodic resyncs enqueue all objects and can create backlogs that delay processing of new events
+- Consider priority queue features (controller-runtime v0.20+) to deprioritize resync-triggered reconciliations vs edge-triggered ones
+- Consider the "expectations pattern" only when reconciliation logic creates resources and immediately lists them to decide further actions — track pending operations in-memory and wait for cache catch-up to avoid acting on stale list results (e.g., creating duplicate replicas)
 - Leader election is configured for HA deployments (LeaseDuration=137s, RenewDeadline=107s, RetryPeriod=26s recommended by OpenShift)
 
 ### 10. Cache Consistency and Client Type Alignment
@@ -185,6 +194,12 @@ However, within a single cache instance, controller-runtime maintains **separate
 - API versioning follows Kubernetes conventions (v1alpha1 → v1beta1 → v1)
 - Webhooks (if present): defaulting webhook sets sensible defaults, validating webhook rejects invalid input
 - Printer columns (`+kubebuilder:printcolumn`) show useful summary info in `kubectl get`
+- **CRD generation hints:**
+  - Consider explicitly marking fields as `+required` or `+optional` to avoid ambiguity
+  - Be aware that zero values pass required field validation (OpenAPI checks non-null only) — use `MinLength`, `Minimum` markers when meaningful
+  - Inspect generated CRD manifests — controller-gen may silently ignore unrecognized markers
+  - Watch out for nested defaulting: set parent struct default to `{}` when nested fields have their own defaults
+  - Always review generated output rather than trusting markers blindly
 
 ## Output Format
 
