@@ -19,6 +19,10 @@ Perform a comprehensive assessment of a Kubernetes controller by invoking three 
 - A sub-skill may return `Not applicable` (for example, API review when a project has no Kubernetes APIs/CRDs).
 - `--detail` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. This flag is passed through to each sub-skill. Without this flag, only the summary tables are produced.
 
+## Input Validation
+
+The only recognized flags are `--scope=<list>` and `--detail`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+
 ## Execution
 
 Run all three skills in parallel, passing `$ARGUMENTS` (including `--detail` if present) to each:
@@ -33,6 +37,8 @@ If a sub-skill returns `Not applicable`, include that result in the report and c
 If parallel execution is unavailable, run the three sub-skills sequentially using the same scope and merge rules.
 
 ## Validation Phase
+
+> This phase runs **only when `--detail` is passed**. Without `--detail`, skip directly to Scoring using the unvalidated findings and severities.
 
 After the three assessment sub-skills complete and their findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context. The validator's purpose is to independently verify whether each finding represents a real behavioral issue in the controller.
 
