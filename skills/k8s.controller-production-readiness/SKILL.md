@@ -3,7 +3,7 @@ name: k8s.controller-production-readiness
 description: Evaluate a Kubernetes controller's production readiness by reviewing test coverage, observability (events, logs, metrics), and operational maturity.
 ---
 
-# Kubernetes Controller Production Readiness
+# Kubernetes Controller Production Readiness Assessment
 
 Evaluate a Kubernetes controller's production readiness focusing on test coverage and observability.
 This skill is primarily designed for Go controllers built with `controller-runtime`/kubebuilder patterns.
@@ -16,11 +16,12 @@ This skill is primarily designed for Go controllers built with `controller-runti
 - If no arguments are provided, assess current repository changes from git diff.
 - If there are no changes, start with controller packages and test directories first; expand to the full codebase only when needed for evidence.
 - If the project has no controller/operator implementation assets in scope (for example, no controller reconciler code, no relevant tests, and no operator deployment/runtime manifests), skip this skill and report `Not applicable`.
-- `--detail` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
+- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
 
 ## Input Validation
 
-The only recognized flag is `--detail`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+The only recognized flag is `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+When this skill is invoked by `/k8s.controller-assessment`, it should receive only scope text and optional `--details` (orchestration flags such as `--scope` are not valid here).
 
 ## References
 
@@ -122,6 +123,13 @@ Use this repeatable workflow:
    - Minor: **-3** per finding
 3. Floor score at 0.
 
+Interpretation:
+
+- **90-100**: Production-ready with minor polish
+- **75-89**: Solid baseline, a few important gaps
+- **50-74**: Significant issues to address before production
+- **<50**: High operational risk; major redesign/fixes recommended
+
 ## Output Format
 
 Produce the assessment in this format. All sections are always included unless noted otherwise.
@@ -151,11 +159,10 @@ Findings summary table (one row per finding, sorted by severity then by area):
 |---|----------|------|------|-------|------------|
 
 - **Where** must include a concrete file path and line reference for every Critical and Major finding.
-- Evidence rule: include at least one concrete file path and line reference for every Critical and Major finding.
 
-### Findings (only with `--detail`)
+### Findings (only with `--details`)
 
-This section is only included when the `--detail` flag is passed.
+This section is only included when the `--details` flag is passed.
 
 For each finding (numbered to match the summary table), produce:
 
@@ -169,7 +176,7 @@ For each finding (numbered to match the summary table), produce:
 | **Confidence** | High / Medium / Low |
 | **Not verified** | Any assumptions or runtime checks not validated (or `—`) |
 
-**Why**: Explanation of why this is an issue.
+**Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
 
 **Fix**: Concrete suggested change.
 

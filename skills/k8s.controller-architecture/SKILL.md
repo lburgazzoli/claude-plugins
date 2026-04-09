@@ -16,11 +16,12 @@ This skill is primarily designed for Go controllers built with `controller-runti
 - If no arguments are provided, assess current repository changes from git diff.
 - If there are no changes, start with controller packages and API types first; expand to the full codebase only when needed for evidence.
 - If the project has no controller/operator implementation assets in scope (for example, no controller reconciler code and no relevant controller/runtime manifests), skip this skill and report `Not applicable`.
-- `--detail` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
+- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
 
 ## Input Validation
 
-The only recognized flag is `--detail`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+The only recognized flag is `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+When this skill is invoked by `/k8s.controller-assessment`, it should receive only scope text and optional `--details` (orchestration flags such as `--scope` are not valid here).
 
 ## References
 
@@ -31,7 +32,7 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 ### 1. Reconciliation Idempotency and State Handling
 
 - Each controller should have a single responsibility with clear inputs/outputs — follow Unix philosophy where each controller does one thing well
-- Adopt a consistent reconcile structure: fetch resource, handle finalization, initialize conditions, reconcile, patch status (Knative pattern)
+- Adopt a consistent reconcile structure: fetch resource, handle finalization, initialize conditions, reconcile, patch status (Knative pattern — see [cluster-api](https://github.com/kubernetes-sigs/cluster-api) reconcilers for a well-structured example)
 - Reconcile function produces the same result regardless of how many times it runs for the same input state
 - State is reconstructed from observed state, not cached or assumed from previous reconciliation
 - No side effects on no-op reconciliations (no unnecessary updates, patches, or event emissions)
@@ -60,9 +61,6 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 - Uses Server-Side Apply (SSA) where appropriate with descriptive `fieldManager` names
 - When using SSA: includes all managed fields in each Apply, omits unmanaged fields, handles conflicts gracefully
 - Does not manually edit `.metadata.managedFields`
-- Uses `ctrl.SetControllerReference()` for ownership, letting garbage collector handle cleanup
-- Declares `.Owns()` in controller setup for automatic watch on owned resources
-- Set `ReaderFailOnMissingInformer: true` on the manager to prevent hidden on-the-fly informer creation from undeclared resource queries (see also Area 8 for cache alignment implications)
 
 ### 4. RBAC Least Privilege and Security
 
@@ -90,21 +88,26 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 - Uses `meta.SetStatusCondition()` or equivalent for proper condition management
 - OpenShift operators: reports `Available`, `Progressing`, `Degraded` conditions on ClusterOperator
 
-### 6. Finalizers, Cleanup Logic, and Owner References
+### 6. Ownership, Finalizers, and Cleanup Logic
 
+- Uses `ctrl.SetControllerReference()` for ownership, letting garbage collector handle cleanup
+- Declares `.Owns()` in controller setup for automatic watch on owned resources
+- Set `ReaderFailOnMissingInformer: true` on the manager to prevent hidden on-the-fly informer creation from undeclared resource queries (see also Area 8 for cache alignment implications)
+- Owner references are set on child resources for automatic garbage collection
+- Does not set cross-namespace owner references (not supported)
 - Finalizers are only used when strictly necessary — specifically for cleanup of external resources not managed by Kubernetes garbage collection (e.g., cloud infrastructure, external databases, DNS records). If all child resources are Kubernetes-native and have owner references, finalizers add unnecessary complexity and should not be used
 - When a finalizer is needed, it is added early (before creating external resources) and removed only after cleanup succeeds
 - Finalizer name follows convention: `<group>/<finalizer-name>` (e.g., `mygroup.example.com/cleanup`)
 - Cleanup logic is idempotent (safe to run multiple times)
-- Owner references are set on child resources for automatic garbage collection
-- Does not set cross-namespace owner references (not supported)
 - Uses `controllerutil.AddFinalizer()` / `controllerutil.RemoveFinalizer()` helpers
 
 ### 7. Performance and Cache Usage
 
+Treat this area as workload-sensitive guidance: classify findings here as `contextual` unless you have concrete evidence of correctness or operational risk impact.
+
 - Uses informer cache (default client) for reads; avoids direct API calls unless required
 - Watches are scoped to relevant namespaces or label selectors when possible
-- Predicates filter irrelevant events (`WithEventFilter`, `GenerationChangedPredicate`)
+- Predicates filter irrelevant events (`builder.WithPredicates()` or legacy `WithEventFilter`, `GenerationChangedPredicate`)
 - `GenerationChangedPredicate` skips reconciliation for metadata-only changes (e.g., label updates not relevant to the controller)
 - Does not block reconciliation with long-running operations (offload to jobs or async)
 - Rate limiting is configured appropriately for the controller's workload
@@ -115,12 +118,16 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 
 ### 8. Cache Consistency and Client Type Alignment
 
+Treat optimization-only findings in this area as `contextual`; escalate to `should` or `must` only when there is clear impact on correctness, scalability, or memory behavior.
+
+Area 7 covers performance-oriented cache tuning (scoping, predicates, rate limiting). This area covers correctness of client-type alignment and informer configuration. If a finding is purely about efficiency, it belongs in Area 7.
+
 - Pick one access pattern (typed, unstructured, or metadata) per GVK — use it consistently across watches, Get, and List calls. Mixing patterns creates duplicate informers (separate watch connections, doubled memory) even though both receive correct selector config.
 - Match read client to watch type: if a resource is watched as `Unstructured`, read it via the cached client with an unstructured object, not a typed clientset. Vice versa for typed watches.
 - Reading via a raw kubernetes clientset (e.g., `client.AppsV1().Deployments().List()`) bypasses the cache entirely — prefer the controller-runtime cached client.
 - `cache.Options.ByObject` entries match by GVK, so they apply regardless of typed vs unstructured access — no special configuration needed.
 - Resources accessed via `client.Get()`/`client.List()` should have a corresponding watch (`.Watches()`, `.Owns()`, `.For()`) or use a direct client explicitly. If a resource is only read but never watched, it needs a watch added or an explicit uncached client.
-- Ensure `ReaderFailOnMissingInformer: true` is set (see Area 3) so undeclared cache access surfaces immediately.
+- Ensure `ReaderFailOnMissingInformer: true` is set (see Area 6) so undeclared cache access surfaces immediately.
 
 **Prefer PartialObjectMetadata:**
 - When the controller only needs metadata (labels, annotations, owner references, name/namespace), use `PartialObjectMetadata` instead of the full typed object to reduce memory consumption and API payload size
@@ -146,7 +153,27 @@ Use this repeatable workflow:
    - `contextual` -> `Minor`
 6. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
 
-## Severity and Scoring Guidance
+## Check Categories and Parallel Execution
+
+Categorize checks into these groups before deep analysis:
+
+- **Category A - Correctness, lifecycle, RBAC, and security:** Areas 1, 2, 4, 5, 6
+- **Category B - Performance and cache behavior:** Areas 3, 7, 8
+
+Execution model:
+
+1. Launch one subagent per category and run the two category checks in parallel.
+2. Give each subagent explicit scope, expected evidence format (file path plus line references), and severity expectations.
+3. Require each subagent to return findings using this schema:
+   - `findingId`, `area`, `severity`, `what`, `where`, `why`, `fix`, `confidence`, `unknowns`
+   - `where` must include concrete file path and line reference for each `Critical` or `Major` finding
+   - Assign category-prefixed IDs (`A-1`, `A-2`, ... for Category A; `B-1`, `B-2`, ... for Category B). The parent agent reassigns sequential IDs after merge.
+4. Require each subagent to return positive highlights.
+5. Merge results in the parent agent, deduplicate overlapping findings, normalize severity using the mapping above, and produce one final report in the output format below.
+6. If categories conflict on severity, prefer the higher severity and explain the rationale in the final report.
+7. If parallel subagent execution is unavailable, run Category A and Category B sequentially using the same evidence and severity rules.
+
+## Scoring
 
 Use this weighting to keep assessments consistent:
 
@@ -171,24 +198,7 @@ Interpretation of overall score:
 - **50-74**: Significant issues to address before production
 - **<50**: High operational risk; major redesign/fixes recommended
 
-## Check Categories and Parallel Execution
-
-Categorize checks into these groups before deep analysis:
-
-- **Category A - Correctness, lifecycle, RBAC, and security:** Areas 1, 2, 4, 5, 6
-- **Category B - Performance and cache behavior:** Areas 3, 7, 8
-
-Execution model:
-
-1. Launch one subagent per category and run the two category checks in parallel.
-2. Give each subagent explicit scope, expected evidence format (file path plus line references), and severity expectations.
-3. Require each subagent to return findings using this schema:
-   - `findingId`, `area`, `severity`, `what`, `where`, `why`, `fix`, `confidence`, `unknowns`
-   - `where` must include concrete file path and line reference for each `Critical` or `Major` finding
-4. Require each subagent to return positive highlights.
-5. Merge results in the parent agent, deduplicate overlapping findings, normalize severity using the mapping above, and produce one final report in the output format below.
-6. If categories conflict on severity, prefer the higher severity and explain the rationale in the final report.
-7. If parallel subagent execution is unavailable, run Category A and Category B sequentially using the same evidence and severity rules.
+When Category A and Category B scores diverge by more than 20 points, call out the divergence in the Summary.
 
 ## Output Format
 
@@ -202,7 +212,7 @@ Score table:
 
 | Metric | Value |
 |--------|-------|
-| **Overall Score** | 0-100 (or `Not applicable`) |
+| **Score** | 0-100 (or `Not applicable`) |
 | **Category A** (Correctness, RBAC, Security) | 0-100 |
 | **Category B** (Performance, Scalability) | 0-100 |
 | **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
@@ -221,11 +231,10 @@ Findings summary table (one row per finding, sorted by severity then by area):
 |---|----------|------|------|-------|------------|
 
 - **Where** must include a concrete file path and line reference for every Critical and Major finding.
-- Evidence rule: include at least one concrete file path and line reference for every Critical and Major finding.
 
-### Findings (only with `--detail`)
+### Findings (only with `--details`)
 
-This section is only included when the `--detail` flag is passed.
+This section is only included when the `--details` flag is passed.
 
 For each finding (numbered to match the summary table), produce:
 

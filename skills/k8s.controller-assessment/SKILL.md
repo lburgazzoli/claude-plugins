@@ -9,38 +9,71 @@ Perform a comprehensive assessment of a Kubernetes controller by invoking three 
 
 ## Inputs
 
-- If `$ARGUMENTS` is provided, pass it through to each sub-skill as scope.
-- If no arguments are provided, each sub-skill will fall back to its own defaults (git diff, then full codebase scan).
+- If `$ARGUMENTS` is provided, parse orchestration flags first, then pass only the remaining scope text to each selected sub-skill.
+- GitHub repository inputs may be full URLs (for example, `https://github.com/org/repo`) or shorthand (`org/repo`). These are forwarded as scope text to sub-skills, which handle them directly.
+- If `$ARGUMENTS` is a GitHub repository, do not apply local `git diff` defaults in sub-skills.
+- If no arguments are provided, each sub-skill will fall back to its own defaults (git diff, then focused directories, then expand as needed for evidence).
 - `--scope=<list>` limits which sub-skills to run. Accepted values: `architecture`, `api`, `production-readiness` (comma-separated). Examples:
   - `--scope=architecture` — run only the architecture review
   - `--scope=architecture,api` — run architecture and API conventions, skip production readiness
   - If `--scope` is omitted, all three sub-skills run.
   - When scope restricts to a subset, scoring uses only the included sub-skills (renormalize weights as described in Scoring).
 - A sub-skill may return `Not applicable` (for example, API review when a project has no Kubernetes APIs/CRDs).
-- `--detail` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. This flag is passed through to each sub-skill. Without this flag, only the summary tables are produced.
+- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. This flag is passed through to each sub-skill. Without this flag, only the summary tables are produced.
 
 ## Input Validation
 
-The only recognized flags are `--scope=<list>` and `--detail`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+The only recognized flags are `--scope=<list>` and `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+
+Validate `--scope=<list>` values strictly:
+
+- Split by comma and trim whitespace.
+- Accepted values are exactly: `architecture`, `api`, `production-readiness`.
+- If any value is unknown, stop before running the assessment and ask the user to confirm whether it is intentional or a typo.
+- If `--scope` is present but resolves to an empty list after parsing, stop and ask for a valid scope.
 
 ## Execution
 
-Run all three skills in parallel, passing `$ARGUMENTS` (including `--detail` if present) to each:
+Resolve selected sub-skills from `--scope` first:
+
+- If `--scope` is omitted, select all three sub-skills.
+- If `--scope` is present, select only the listed sub-skills.
+
+Build child arguments before invocation:
+
+1. Parse and remove `--scope=<list>` from `$ARGUMENTS` (orchestrator-only flag; never forwarded).
+2. Preserve `--details` only when present.
+3. Treat remaining non-flag text as the shared child scope string.
+4. Forward to each selected sub-skill using: `<child-scope> [--details]`.
+
+Run the selected skills in parallel, passing only child arguments to each selected skill:
 
 1. `/k8s.controller-architecture` — reconciliation, error handling, RBAC, status, finalizers, performance, cache
 2. `/k8s.controller-api` — CRD structure, API versioning, webhooks, marker correctness
 3. `/k8s.controller-production-readiness` — test coverage, observability (events, logs, metrics)
 
-Wait for all three to complete before proceeding to the validation phase.
+Wait for all selected sub-skills to complete before proceeding to the merge phase.
 
 If a sub-skill returns `Not applicable`, include that result in the report and continue without treating it as a failure.
-If parallel execution is unavailable, run the three sub-skills sequentially using the same scope and merge rules.
+If parallel execution is unavailable, run the selected sub-skills sequentially using the same child-argument and merge rules.
+
+## Merge and Severity Normalization
+
+After sub-skills complete, merge and normalize findings in this exact order:
+
+1. Combine all findings from selected sub-skills into one list.
+2. Deduplicate overlapping findings — two findings are considered duplicates when they reference the same code location (`where`) and describe the same underlying problem. When in doubt, prefer to keep both as separate findings rather than incorrectly merging distinct issues.
+3. For each merged finding, keep a `sources` list containing every sub-skill that reported it.
+4. If two or more sub-skills report the same issue with different severities, keep the higher severity.
+5. Set `primarySource` for every finding using priority: `Architecture` > `API` > `Production Readiness`. For single-source findings, use that source. For multi-source findings, use the source that reported the higher severity; if severities tied, use the priority order.
+6. Run validation on this merged list and apply validation adjustments.
+7. Compute severity counts and scores only after the final merged severities are settled.
 
 ## Validation Phase
 
-> This phase runs **only when `--detail` is passed**. Without `--detail`, skip directly to Scoring using the unvalidated findings and severities.
+> This phase **always runs** after merging and deduplication. Its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
 
-After the three assessment sub-skills complete and their findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context. The validator's purpose is to independently verify whether each finding represents a real behavioral issue in the controller.
+After findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context. The validator's purpose is to independently verify whether each finding represents a real behavioral issue in the controller.
 
 ### Validator subagent instructions
 
@@ -49,7 +82,7 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 > **Role**: You are a skeptical reviewer. Your job is to challenge each finding from a controller assessment and determine whether it actually impacts the controller's runtime behavior, correctness, or operational safety.
 >
 > **Inputs you receive**:
-> - The merged findings list (each with: severity, source, area, what, where, confidence)
+> - The merged findings list (each with: findingId, severity, primarySource, sources, area, what, where, confidence)
 > - The scope (`$ARGUMENTS`) so you can read the same code
 >
 > **Your task**:
@@ -80,7 +113,7 @@ After the validator returns:
 2. Remove any finding with `validatedSeverity: Dismissed`.
 3. For downgraded findings, append the validator's reason to the finding's `Not verified` field as: `Downgraded from <original> — <reason>`.
 4. Recompute severity counts and scores using the validated severities.
-5. If `--detail` is active, include a **Validation** section after the Findings section listing all verdict changes (downgrades and dismissals) with reasons.
+5. If `--details` is active, include a **Validation** section after the Findings section listing all verdict changes (downgrades and dismissals) with reasons.
 
 ### Skipping validation
 
@@ -88,7 +121,15 @@ If the merged findings list is empty (all sub-skills returned no findings or `No
 
 ## Scoring
 
-Compute scores **after** the validation phase (using validated severities). Recompute sub-skill scores by re-applying the scoring formula to the validated findings for each sub-skill, then compute the overall score:
+Compute scores **after** the validation phase (using validated severities). Recompute sub-skill scores by re-applying the scoring formula to the validated merged findings for each sub-skill, then compute the overall score:
+
+- Each merged finding contributes to every sub-skill listed in its `sources`.
+- Use the merged finding's final severity (post-validation) for every contributing sub-skill.
+- Do not duplicate a finding more than once within the same sub-skill score.
+
+Sub-skill scoring models:
+- **Architecture**: uses weighted categories — Category A (Areas 1, 2, 4, 5, 6) at 60% and Category B (Areas 3, 7, 8) at 40%. Start each category at 100, deduct per finding, floor at 0, then compute `Architecture = A × 0.60 + B × 0.40`.
+- **API Conventions** and **Production Readiness**: use flat scoring — start at 100, deduct per finding (Critical -20, Major -10, Minor -3), floor at 0.
 
 - **Architecture** (from `/k8s.controller-architecture`): **50%**
 - **API Conventions** (from `/k8s.controller-api`): **25%**
@@ -102,6 +143,10 @@ If all sub-skills are `Not applicable`, do not compute `Overall`; report `Overal
 Example:
 - If `API Conventions` is `Not applicable`, renormalize `Architecture` and `Production Readiness` from `0.50/0.25` to `0.667/0.333`.
 - Then compute `Overall = Architecture × 0.667 + Production Readiness × 0.333`.
+- If `--scope=architecture`, compute `Overall = Architecture × 1.0`.
+- If `--scope=api,production-readiness`, renormalize `API/Production Readiness` from `0.25/0.25` to `0.50/0.50`.
+
+When the overall score reflects fewer than all three sub-skills (due to `--scope` or `Not applicable`), include a note in the Summary stating which dimensions contributed to the score.
 
 Interpretation:
 
@@ -112,7 +157,7 @@ Interpretation:
 
 ## Output Format
 
-Merge findings from all three skills into a single report. Deduplicate overlapping findings. If skills conflict on severity for the same issue, prefer the higher severity.
+Merge findings from selected sub-skills into a single report. Deduplicate overlapping findings that refer to the same underlying issue. Preserve full source attribution per finding (`sources`). If skills conflict on severity for the same issue, prefer the higher severity. If severity still ties, use source priority for display (`primarySource`): `Architecture` > `API` > `Production Readiness`.
 
 All sections are always included unless noted otherwise.
 
@@ -138,18 +183,17 @@ Severity count table:
 | Major | _n_ |
 | Minor | _n_ |
 
-Findings summary table (one row per finding, sorted by severity then by source):
+Findings summary table (one row per finding, sorted by severity then by primary source):
 
 | # | Severity | Source | Area | What | Where | Confidence |
 |---|----------|--------|------|------|-------|------------|
 
-- **Source**: Which sub-skill identified the finding (Architecture, API, Production Readiness).
+- **Source**: Display `primarySource` (Architecture, API, Production Readiness). If multiple sub-skills identified the same merged finding, optionally append `(+N more)` and list all contributors in `--details`.
 - **Where** must include a concrete file path and line reference for every Critical and Major finding.
-- Evidence rule: include at least one concrete file path and line reference for every Critical and Major finding.
 
-### Findings (only with `--detail`)
+### Findings (only with `--details`)
 
-This section is only included when the `--detail` flag is passed.
+This section is only included when the `--details` flag is passed.
 
 For each finding (numbered to match the summary table), produce:
 
@@ -159,6 +203,7 @@ For each finding (numbered to match the summary table), produce:
 |---|---|
 | **Severity** | Critical / Major / Minor |
 | **Source** | Architecture / API / Production Readiness |
+| **Also reported by** | Additional sources from `sources` beyond `primarySource` (or `—`) |
 | **Area** | Assessment area name |
 | **Where** | File and line reference |
 | **Confidence** | High / Medium / Low |
@@ -170,9 +215,9 @@ For each finding (numbered to match the summary table), produce:
 
 ---
 
-### Validation (only with `--detail`)
+### Validation (only with `--details`)
 
-This section is only included when the `--detail` flag is passed and the validation phase produced changes.
+This section is only included when the `--details` flag is passed and the validation phase produced changes.
 
 List each downgraded or dismissed finding:
 
@@ -181,4 +226,4 @@ List each downgraded or dismissed finding:
 
 ### Positive Highlights
 
-Notable strengths from all three skills.
+Notable strengths from selected sub-skills.

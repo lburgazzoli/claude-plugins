@@ -3,9 +3,10 @@ name: k8s.controller-api
 description: Review or audit Kubernetes CRD definitions, API types, webhooks, and markers for compliance with upstream Kubernetes API conventions.
 ---
 
-# Kubernetes API Conventions Review
+# Kubernetes API Conventions Assessment
 
 Review Kubernetes Custom Resource Definitions (CRDs), API types, webhooks, and kubebuilder markers for compliance with upstream Kubernetes API conventions.
+This skill is primarily designed for Go controllers built with `controller-runtime`/kubebuilder patterns.
 
 ## Inputs
 
@@ -13,13 +14,14 @@ Review Kubernetes Custom Resource Definitions (CRDs), API types, webhooks, and k
 - GitHub repository inputs may be full URLs (for example, `https://github.com/org/repo`) or shorthand (`org/repo`).
 - If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source and do not apply local `git diff` defaults.
 - If no arguments are provided, assess current repository changes from git diff.
-- If there are no changes, start with `api/` and `config/crd/` directories first; expand only when needed for evidence.
+- If there are no changes, start with `api/`, `pkg/apis/`, and `config/crd/` directories first; expand only when needed for evidence.
 - If the project does not define Kubernetes APIs/CRDs (no API types, no CRD manifests, and no related markers), skip this skill entirely and report `Not applicable`.
-- `--detail` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
+- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
 
 ## Input Validation
 
-The only recognized flag is `--detail`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+The only recognized flag is `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+When this skill is invoked by `/k8s.controller-assessment`, it should receive only scope text and optional `--details` (orchestration flags such as `--scope` are not valid here).
 
 ## References
 
@@ -31,6 +33,8 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 
 - CRD follows Kubernetes API conventions:
   - `spec` for desired state, `status` for observed state
+  - `+kubebuilder:subresource:status` marker is present on types with a `Status` field to enable the status subresource (required for `r.Status().Update()` and separate status RBAC)
+  - `+kubebuilder:resource:scope=` is explicitly set (`Cluster` or `Namespaced`) — do not rely on the implicit default. Cluster-scoped resources should be justified (most resources should be namespace-scoped). Verify scope aligns with RBAC markers and owner reference patterns
   - Uses `int32`/`int64` for integers, avoids unsigned types
   - Enums are string-typed CamelCase values
   - Lists of named subobjects preferred over maps of subobjects
@@ -42,7 +46,7 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 
 - API versioning follows Kubernetes conventions (v1alpha1 → v1beta1 → v1)
 - Conversion webhooks are implemented when multiple versions coexist
-- Storage version is explicitly marked (only relevant when multiple versions exist — skip for single-version CRDs)
+- `+kubebuilder:storageversion` marker is present on exactly one version when multiple API versions coexist (`must`). For single-version CRDs the marker is recommended but its absence is not an error (`contextual`).
 
 ### 3. Webhooks (if present)
 
@@ -63,6 +67,7 @@ Skip this area entirely if the project has no admission webhooks. Only assess wh
   - Verify marker/field type alignment — e.g., `+kubebuilder:validation:Minimum=1` on a string field produces no validation in the generated CRD
   - Check `+kubebuilder:validation:Enum` values match the corresponding const block defining valid values
 - Watch out for nested defaulting: when a nested struct field has `+kubebuilder:default:` markers, the parent field must have `+kubebuilder:default:{}` or the nested defaults are never applied
+- Verify `+kubebuilder:object:root:=true` is present on root types and that generated deepcopy files (`zz_generated.deepcopy.go`) are not stale relative to current type definitions
 - Always review generated output rather than trusting markers blindly
 
 ## Assessment Procedure
@@ -89,6 +94,13 @@ Use this repeatable workflow:
    - Major: **-10** per finding
    - Minor: **-3** per finding
 3. Floor score at 0.
+
+Interpretation:
+
+- **90-100**: Production-ready with minor polish
+- **75-89**: Solid baseline, a few important gaps
+- **50-74**: Significant issues to address before production
+- **<50**: High operational risk; major redesign/fixes recommended
 
 ## Output Format
 
@@ -119,11 +131,10 @@ Findings summary table (one row per finding, sorted by severity then by area):
 |---|----------|------|------|-------|------------|
 
 - **Where** must include a concrete file path and line reference for every Critical and Major finding.
-- Evidence rule: include at least one concrete file path and line reference for every Critical and Major finding.
 
-### Findings (only with `--detail`)
+### Findings (only with `--details`)
 
-This section is only included when the `--detail` flag is passed.
+This section is only included when the `--details` flag is passed.
 
 For each finding (numbered to match the summary table), produce:
 
