@@ -16,6 +16,7 @@ This skill is primarily designed for Go controllers built with `controller-runti
 - If no arguments are provided, assess current repository changes from git diff.
 - If there are no changes, start with controller packages and API types first; expand to the full codebase only when needed for evidence.
 - If the project has no controller/operator implementation assets in scope (for example, no controller reconciler code and no relevant controller/runtime manifests), skip this skill and report `Not applicable`.
+- `--detail` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
 
 ## References
 
@@ -187,29 +188,59 @@ Execution model:
 
 ## Output Format
 
-Produce the assessment in this format:
+Produce the assessment in this format. All sections are always included unless noted otherwise.
 
 ### Summary
+
 2-3 sentences describing the overall quality and maturity of the controller implementation.
-- `Overall Score`: 0-100 (or `Not applicable`)
-- `Category Scores`: A/B
 
-### Critical Issues (must fix)
-Issues that will cause bugs, data loss, security vulnerabilities, or API violations in production. Each issue includes:
-- **What**: Description of the problem
-- **Where**: File and line reference
-- **Why**: Why this is critical (with reference to upstream convention if applicable)
-- **Fix**: Concrete suggested change
-- **Confidence**: High/Medium/Low based on evidence strength
-- **Not verified**: Any assumptions or runtime checks not validated
-- Evidence rule: include at least one concrete file path and line reference for every Critical finding.
+Score table:
 
-### Major Issues (should fix)
-Issues that indicate poor practices, potential reliability problems, or convention violations. Same format as critical.
-- Evidence rule: include at least one concrete file path and line reference for every Major finding.
+| Metric | Value |
+|--------|-------|
+| **Overall Score** | 0-100 (or `Not applicable`) |
+| **Category A** (Correctness, RBAC, Security) | 0-100 |
+| **Category B** (Performance, Scalability) | 0-100 |
+| **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
 
-### Minor Issues (nice to improve)
-Improvements that would increase code quality, observability, or maintainability. Same format as critical.
+Severity count table:
+
+| Severity | Count |
+|----------|-------|
+| Critical | _n_ |
+| Major | _n_ |
+| Minor | _n_ |
+
+Findings summary table (one row per finding, sorted by severity then by area):
+
+| # | Severity | Area | What | Where | Confidence |
+|---|----------|------|------|-------|------------|
+
+- **Where** must include a concrete file path and line reference for every Critical and Major finding.
+- Evidence rule: include at least one concrete file path and line reference for every Critical and Major finding.
+
+### Findings (only with `--detail`)
+
+This section is only included when the `--detail` flag is passed.
+
+For each finding (numbered to match the summary table), produce:
+
+#### _N_. _Finding title_
+
+| | |
+|---|---|
+| **Severity** | Critical / Major / Minor |
+| **Area** | Assessment area name |
+| **Where** | File and line reference |
+| **Confidence** | High / Medium / Low |
+| **Not verified** | Any assumptions or runtime checks not validated (or `—`) |
+
+**Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
+
+**Fix**: Concrete suggested change.
+
+---
 
 ### Positive Highlights
+
 Things the implementation does well, patterns worth preserving or replicating.

@@ -15,6 +15,7 @@ Review Kubernetes Custom Resource Definitions (CRDs), API types, webhooks, and k
 - If no arguments are provided, assess current repository changes from git diff.
 - If there are no changes, start with `api/` and `config/crd/` directories first; expand only when needed for evidence.
 - If the project does not define Kubernetes APIs/CRDs (no API types, no CRD manifests, and no related markers), skip this skill entirely and report `Not applicable`.
+- `--detail` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
 
 ## References
 
@@ -87,28 +88,57 @@ Use this repeatable workflow:
 
 ## Output Format
 
-Produce the assessment in this format:
+Produce the assessment in this format. All sections are always included unless noted otherwise.
 
 ### Summary
+
 2-3 sentences describing the API design quality and conventions compliance.
-- `Score`: 0-100 (or `Not applicable`)
 
-### Critical Issues (must fix)
-Issues that violate Kubernetes API conventions or will cause runtime failures. Each issue includes:
-- **What**: Description of the problem
-- **Where**: File and line reference
-- **Why**: Why this is critical (with reference to upstream convention if applicable)
-- **Fix**: Concrete suggested change
-- **Confidence**: High/Medium/Low based on evidence strength
-- **Not verified**: Any assumptions or runtime checks not validated
-- Evidence rule: include at least one concrete file path and line reference for every Critical finding.
+Score table:
 
-### Major Issues (should fix)
-Issues that indicate convention violations or poor API design. Same format as critical.
-- Evidence rule: include at least one concrete file path and line reference for every Major finding.
+| Metric | Value |
+|--------|-------|
+| **Score** | 0-100 (or `Not applicable`) |
+| **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
 
-### Minor Issues (nice to improve)
-Improvements that would increase API quality or developer experience. Same format as critical.
+Severity count table:
+
+| Severity | Count |
+|----------|-------|
+| Critical | _n_ |
+| Major | _n_ |
+| Minor | _n_ |
+
+Findings summary table (one row per finding, sorted by severity then by area):
+
+| # | Severity | Area | What | Where | Confidence |
+|---|----------|------|------|-------|------------|
+
+- **Where** must include a concrete file path and line reference for every Critical and Major finding.
+- Evidence rule: include at least one concrete file path and line reference for every Critical and Major finding.
+
+### Findings (only with `--detail`)
+
+This section is only included when the `--detail` flag is passed.
+
+For each finding (numbered to match the summary table), produce:
+
+#### _N_. _Finding title_
+
+| | |
+|---|---|
+| **Severity** | Critical / Major / Minor |
+| **Area** | Assessment area name |
+| **Where** | File and line reference |
+| **Confidence** | High / Medium / Low |
+| **Not verified** | Any assumptions or runtime checks not validated (or `—`) |
+
+**Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
+
+**Fix**: Concrete suggested change.
+
+---
 
 ### Positive Highlights
+
 Things the API design does well, patterns worth preserving or replicating.
