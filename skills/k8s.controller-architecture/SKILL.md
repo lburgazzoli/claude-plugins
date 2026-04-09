@@ -1,34 +1,25 @@
 ---
-name: k8s-controller-assessment
-description: Assess a Kubernetes controller implementation against upstream conventions, kubebuilder best practices, and production readiness criteria.
+name: k8s.controller-architecture
+description: Assess, review, or audit a Kubernetes controller architecture for upstream conventions, kubebuilder best practices, and correctness.
 ---
 
-# Kubernetes Controller Assessment
+# Kubernetes Controller Architecture Assessment
 
-Perform a comprehensive assessment of a Kubernetes controller implementation.
+Perform a comprehensive architecture assessment of a Kubernetes controller implementation.
+This skill is primarily designed for Go controllers built with `controller-runtime`/kubebuilder patterns.
 
 ## Inputs
 
-- If `$ARGUMENTS` is provided, treat it as scope (files, package, controller name, or assessment focus).
-- If no arguments are provided, assess current repository changes from git diff. If there are no changes, assess the full codebase.
+- If `$ARGUMENTS` is provided, treat it as scope (files, package, controller name, assessment focus, or GitHub repository).
+- GitHub repository inputs may be full URLs (for example, `https://github.com/org/repo`) or shorthand (`org/repo`).
+- If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source and do not apply local `git diff` defaults.
+- If no arguments are provided, assess current repository changes from git diff.
+- If there are no changes, start with controller packages and API types first; expand to the full codebase only when needed for evidence.
+- If the project has no controller/operator implementation assets in scope (for example, no controller reconciler code and no relevant controller/runtime manifests), skip this skill and report `Not applicable`.
 
 ## References
 
-Use these upstream references as the authoritative source for conventions:
-
-- [Kubernetes API Conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md)
-- [OpenShift Conventions](https://github.com/openshift/enhancements/blob/master/CONVENTIONS.md)
-- [Kubebuilder Book](https://book.kubebuilder.io/)
-- [kubebuilder](https://github.com/kubernetes-sigs/kubebuilder)
-- [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime)
-- [controller-tools](https://github.com/kubernetes-sigs/controller-tools)
-- [Kubernetes Operator Pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
-- [Kubernetes Logging Conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/logging.md)
-- [Structured Logging Migration](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/migration-to-structured-logging.md)
-- [client-go](https://github.com/kubernetes-sigs/controller-runtime)
-- [Server-Side Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
-- [Controller Development Pitfalls](https://ahmet.im/blog/controller-pitfalls/)
-- [CRD Generation Pitfalls](https://ahmet.im/blog/crd-generation-pitfalls/)
+Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritative source of conventions and high-quality reference implementations.
 
 ## Assessment Areas
 
@@ -39,6 +30,7 @@ Use these upstream references as the authoritative source for conventions:
 - Reconcile function produces the same result regardless of how many times it runs for the same input state
 - State is reconstructed from observed state, not cached or assumed from previous reconciliation
 - No side effects on no-op reconciliations (no unnecessary updates, patches, or event emissions)
+- Labels and annotations must not be blindly propagated from parent resources to child templates (e.g., from a CR to a Deployment's `spec.template.metadata`), as any change to the parent's labels would trigger a rolling restart of the underlying pods. If label/annotation propagation is intentional, it should use an explicit opt-in allowlist of keys to propagate, not copy-all with an opt-out denylist
 - Handles resource-not-found gracefully (deleted between queue and reconciliation)
 - Uses `apierrors.IsNotFound()` to detect deleted resources and returns nil to stop reconciliation
 - Properly handles optimistic concurrency via `resourceVersion` conflicts (re-fetch and retry)
@@ -65,7 +57,7 @@ Use these upstream references as the authoritative source for conventions:
 - Does not manually edit `.metadata.managedFields`
 - Uses `ctrl.SetControllerReference()` for ownership, letting garbage collector handle cleanup
 - Declares `.Owns()` in controller setup for automatic watch on owned resources
-- Set `ReaderFailOnMissingInformer: true` on the manager to prevent hidden on-the-fly informer creation from undeclared resource queries
+- Set `ReaderFailOnMissingInformer: true` on the manager to prevent hidden on-the-fly informer creation from undeclared resource queries (see also Area 8 for cache alignment implications)
 
 ### 4. RBAC Least Privilege and Security
 
@@ -76,6 +68,7 @@ Use these upstream references as the authoritative source for conventions:
 - No cluster-scoped permissions when namespace-scoped suffices
 - Secrets access is scoped to specific secrets if possible, not blanket access
 - RBAC markers match actual API calls in the code (no stale or missing markers)
+- **Meta-operators** (operators that manage other operators, e.g., cluster-api-operator, OLM): broader RBAC is expected because the operator must manage resources of its sub-operators. When a meta-operator is detected, verify that permission boundaries match the actual sub-operator manifests being managed, in addition to the operator's own resources — do not flag these broader permissions as least-privilege violations
 
 ### 5. Status, Conditions, and Observed Generation
 
@@ -102,47 +95,7 @@ Use these upstream references as the authoritative source for conventions:
 - Does not set cross-namespace owner references (not supported)
 - Uses `controllerutil.AddFinalizer()` / `controllerutil.RemoveFinalizer()` helpers
 
-### 7. Test Coverage
-
-- Unit tests for reconciliation logic covering:
-  - Happy path (resource created, updated, deleted)
-  - Error paths (API errors, missing dependencies, invalid spec)
-  - Idempotency (running reconcile twice produces same result)
-  - Finalizer flow (add, cleanup, remove)
-  - Status condition transitions
-- Integration tests using envtest for realistic API server interaction
-- Tests use `gomega` matchers with `Eventually`/`Consistently` for async assertions
-- No flaky tests relying on timing or sleep
-- Edge cases: concurrent modifications, rapid creation/deletion, large resource counts
-
-### 8. Observability (Events, Logs, Metrics)
-
-**Events:**
-- Records events for significant state changes (`r.Recorder.Event()` or `r.Recorder.Eventf()`)
-- Uses `Normal` type for successful operations, `Warning` for failures
-- Event reasons are CamelCase, messages are human-readable
-- Does not emit events on every reconciliation (only meaningful transitions)
-
-**Logging:**
-- Uses structured logging (`log.FromContext(ctx)` from controller-runtime, or `klog.InfoS`/`klog.ErrorS`)
-- No unstructured logging (`klog.Infof`, `fmt.Printf`, `log.Printf`)
-- Key names use lowerCamelCase (`podName`, `namespace`, not `pod_name`)
-- Messages start with capital letter, no ending punctuation, past tense ("Deleted pod" not "Deleting pod...")
-- Uses `klog.KObj()` / `klog.KRef()` for Kubernetes object references in log values
-- Appropriate verbosity levels:
-  - V(0): Critical errors, startup info
-  - V(1): Configuration, expected repeated errors
-  - V(2): Default operational level — state changes, reconciliation events
-  - V(4): Debug-level detail
-- Libraries return errors instead of logging them (caller controls output)
-- Does not log-and-return-error (pick one)
-
-**Metrics:**
-- Exposes custom metrics for controller-specific business logic if applicable
-- Uses prometheus client conventions (snake_case metric names, proper label cardinality)
-- Includes reconciliation duration and error rate metrics where appropriate
-
-### 9. Performance and Cache Usage
+### 7. Performance and Cache Usage
 
 - Uses informer cache (default client) for reads; avoids direct API calls unless required
 - Watches are scoped to relevant namespaces or label selectors when possible
@@ -153,25 +106,16 @@ Use these upstream references as the authoritative source for conventions:
 - Monitor reconciliation latency and queue depth; understand that periodic resyncs enqueue all objects and can create backlogs that delay processing of new events
 - Consider priority queue features (controller-runtime v0.20+) to deprioritize resync-triggered reconciliations vs edge-triggered ones
 - Consider the "expectations pattern" only when reconciliation logic creates resources and immediately lists them to decide further actions — track pending operations in-memory and wait for cache catch-up to avoid acting on stale list results (e.g., creating duplicate replicas)
-- Leader election is configured for HA deployments (LeaseDuration=137s, RenewDeadline=107s, RetryPeriod=26s recommended by OpenShift)
+- Leader election is configured for HA deployments; tune lease duration, renew deadline, and retry period based on cluster network characteristics and failover tolerance
 
-### 10. Cache Consistency and Client Type Alignment
+### 8. Cache Consistency and Client Type Alignment
 
-controller-runtime's `delegatingByGVKCache` routes cache lookups by **GVK, not by Go type**. When `cache.Options.ByObject` is configured with a typed object (e.g., `&appsv1.Deployment{}`), the GVK is extracted via `apiutil.GVKForObject`. An unstructured object with the same GVK (e.g., an `*unstructured.Unstructured` with `apiVersion: apps/v1, kind: Deployment`) resolves to the **same per-GVK cache**. This means `ByObject` settings (label selectors, field selectors, transforms) apply equally to typed, unstructured, and metadata access for that GVK.
-
-However, within a single cache instance, controller-runtime maintains **separate informer tracker maps** (`tracker.Structured`, `tracker.Unstructured`, `tracker.Metadata`), keyed by `runtime.Object` type via `informersByType()`. If the same GVK is accessed as both typed and unstructured, **two separate informers** (and two API server watch connections) are created within the same per-GVK cache — both with the same selector config, but consuming duplicate memory and watch resources.
-
-**Avoid duplicate informers for the same GVK:**
-- Pick one access pattern (typed, unstructured, or metadata) per GVK and use it consistently across watches, Get, and List calls
-- If a resource is watched as `Unstructured` (e.g., via dynamic `source.Kind` with an unstructured object), reads for that resource should also use the unstructured cache (via the controller-runtime cached client with an unstructured object), not a typed clientset
-- If a resource is watched as a typed object (e.g., `&appsv1.Deployment{}` via `.Owns()` or `.Watches()`), reads should use the typed cache
-- Mixing types does not cause panics or cache misses — both informers receive the correct selector config — but it wastes memory and API server watch connections
-- Reading via a raw kubernetes clientset (e.g., `client.AppsV1().Deployments().List()`) bypasses the cache entirely and hits the API server directly — prefer the controller-runtime cached client
-
-**Cache configuration alignment:**
-- `cache.Options.ByObject` entries are matched by GVK, so they apply regardless of whether the access is typed or unstructured — no special unstructured cache configuration is needed
-- Every `client.Get()` or `client.List()` call on a resource must have a corresponding Watch (via `.Watches()`, `.Owns()`, or `.For()`) or explicit cache configuration — otherwise the informer cache is not populated and reads will fail or hit the API server directly
-- If a resource is only read (Get/List) but never watched, it either needs a watch added or should use a direct (non-cached) client explicitly
+- Pick one access pattern (typed, unstructured, or metadata) per GVK — use it consistently across watches, Get, and List calls. Mixing patterns creates duplicate informers (separate watch connections, doubled memory) even though both receive correct selector config.
+- Match read client to watch type: if a resource is watched as `Unstructured`, read it via the cached client with an unstructured object, not a typed clientset. Vice versa for typed watches.
+- Reading via a raw kubernetes clientset (e.g., `client.AppsV1().Deployments().List()`) bypasses the cache entirely — prefer the controller-runtime cached client.
+- `cache.Options.ByObject` entries match by GVK, so they apply regardless of typed vs unstructured access — no special configuration needed.
+- Resources accessed via `client.Get()`/`client.List()` should have a corresponding watch (`.Watches()`, `.Owns()`, `.For()`) or use a direct client explicitly. If a resource is only read but never watched, it needs a watch added or an explicit uncached client.
+- Ensure `ReaderFailOnMissingInformer: true` is set (see Area 3) so undeclared cache access surfaces immediately.
 
 **Prefer PartialObjectMetadata:**
 - When the controller only needs metadata (labels, annotations, owner references, name/namespace), use `PartialObjectMetadata` instead of the full typed object to reduce memory consumption and API payload size
@@ -182,24 +126,64 @@ However, within a single cache instance, controller-runtime maintains **separate
 - When access is needed, prefer direct (uncached) client reads or scope the cache to specific namespaces/labels
 - If caching is unavoidable, restrict it via `cache.Options.ByObject` with label or field selectors
 
-### 11. Kubernetes API Conventions Compliance
+## Assessment Procedure
 
-- CRD follows Kubernetes API conventions:
-  - `spec` for desired state, `status` for observed state
-  - Uses `int32`/`int64` for integers, avoids unsigned types
-  - Enums are string-typed CamelCase values
-  - Lists of named subobjects preferred over maps of subobjects
-  - All optional fields have `+optional` marker and `omitempty` JSON tag
-  - Required fields are validated with kubebuilder markers (`+kubebuilder:validation:Required`)
-- API versioning follows Kubernetes conventions (v1alpha1 → v1beta1 → v1)
-- Webhooks (if present): defaulting webhook sets sensible defaults, validating webhook rejects invalid input
-- Printer columns (`+kubebuilder:printcolumn`) show useful summary info in `kubectl get`
-- **CRD generation hints:**
-  - Consider explicitly marking fields as `+required` or `+optional` to avoid ambiguity
-  - Be aware that zero values pass required field validation (OpenAPI checks non-null only) — use `MinLength`, `Minimum` markers when meaningful
-  - Inspect generated CRD manifests — controller-gen may silently ignore unrecognized markers
-  - Watch out for nested defaulting: set parent struct default to `{}` when nested fields have their own defaults
-  - Always review generated output rather than trusting markers blindly
+Use this repeatable workflow:
+
+1. Determine scope from `$ARGUMENTS`, git diff, or targeted controller/API packages.
+   - If `$ARGUMENTS` points to a GitHub repository, prioritize `api/`, `controllers/`, `config/rbac/`, `config/crd/`, and test directories as initial evidence sources.
+2. If no controller/operator implementation assets are present in scope, stop and return `Not applicable`.
+3. Collect evidence first (specific files and call sites), then classify issues by impact.
+4. Mark each finding as `must`, `should`, or `contextual` based on production risk.
+5. Map internal labels to report severities:
+   - `must` -> `Critical`
+   - `should` -> `Major`
+   - `contextual` -> `Minor`
+6. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
+
+## Severity and Scoring Guidance
+
+Use this weighting to keep assessments consistent:
+
+- **Category A** — Correctness, data safety, RBAC, and security (Areas 1, 2, 4, 5, 6): **60%**
+- **Category B** — Performance and scalability (Areas 3, 7, 8): **40%**
+
+Scoring procedure:
+
+1. Start each category at 100.
+2. For each finding, subtract points based on severity:
+   - Critical: **-20** per finding
+   - Major: **-10** per finding
+   - Minor: **-3** per finding
+3. Floor each category score at 0.
+4. Compute the overall score as the weighted sum: `Overall = A × 0.60 + B × 0.40`.
+5. Report both the per-category scores and the overall score.
+
+Interpretation of overall score:
+
+- **90-100**: Production-ready with minor polish
+- **75-89**: Solid baseline, a few important gaps
+- **50-74**: Significant issues to address before production
+- **<50**: High operational risk; major redesign/fixes recommended
+
+## Check Categories and Parallel Execution
+
+Categorize checks into these groups before deep analysis:
+
+- **Category A - Correctness, lifecycle, RBAC, and security:** Areas 1, 2, 4, 5, 6
+- **Category B - Performance and cache behavior:** Areas 3, 7, 8
+
+Execution model:
+
+1. Launch one subagent per category and run the two category checks in parallel.
+2. Give each subagent explicit scope, expected evidence format (file path plus line references), and severity expectations.
+3. Require each subagent to return findings using this schema:
+   - `findingId`, `area`, `severity`, `what`, `where`, `why`, `fix`, `confidence`, `unknowns`
+   - `where` must include concrete file path and line reference for each `Critical` or `Major` finding
+4. Require each subagent to return positive highlights.
+5. Merge results in the parent agent, deduplicate overlapping findings, normalize severity using the mapping above, and produce one final report in the output format below.
+6. If categories conflict on severity, prefer the higher severity and explain the rationale in the final report.
+7. If parallel subagent execution is unavailable, run Category A and Category B sequentially using the same evidence and severity rules.
 
 ## Output Format
 
@@ -207,6 +191,8 @@ Produce the assessment in this format:
 
 ### Summary
 2-3 sentences describing the overall quality and maturity of the controller implementation.
+- `Overall Score`: 0-100 (or `Not applicable`)
+- `Category Scores`: A/B
 
 ### Critical Issues (must fix)
 Issues that will cause bugs, data loss, security vulnerabilities, or API violations in production. Each issue includes:
@@ -214,9 +200,13 @@ Issues that will cause bugs, data loss, security vulnerabilities, or API violati
 - **Where**: File and line reference
 - **Why**: Why this is critical (with reference to upstream convention if applicable)
 - **Fix**: Concrete suggested change
+- **Confidence**: High/Medium/Low based on evidence strength
+- **Not verified**: Any assumptions or runtime checks not validated
+- Evidence rule: include at least one concrete file path and line reference for every Critical finding.
 
 ### Major Issues (should fix)
 Issues that indicate poor practices, potential reliability problems, or convention violations. Same format as critical.
+- Evidence rule: include at least one concrete file path and line reference for every Major finding.
 
 ### Minor Issues (nice to improve)
 Improvements that would increase code quality, observability, or maintainability. Same format as critical.

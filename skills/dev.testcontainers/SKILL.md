@@ -1,5 +1,5 @@
 ---
-name: testcontainers
+name: dev.testcontainers
 description: Use this skill when running tests that use testcontainers, when setting up Podman for testcontainers, when troubleshooting container-based tests, or when the user mentions "testcontainers", "Podman tests", "Docker tests", or "container engine"
 ---
 
