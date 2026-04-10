@@ -93,6 +93,7 @@ Use this repeatable workflow:
      - Described problem **cannot occur** given surrounding code → dismiss entirely
      - Severity appropriate with real impact → keep as-is
    - Remove dismissed findings and adjust severities before scoring.
+   - Validation **always runs** and its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
 8. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
 
 ## Scoring
@@ -162,6 +163,15 @@ For each finding (numbered to match the summary table), produce:
 **Fix**: Concrete suggested change.
 
 ---
+
+### Validation (only with `--details`)
+
+This section is only included when the `--details` flag is passed and the validation phase produced changes.
+
+List each downgraded or dismissed finding:
+
+| # | Original Severity | Validated Severity | Verdict | Reason |
+|---|-------------------|--------------------|---------|--------|
 
 ### Positive Highlights
 
