@@ -75,6 +75,7 @@ Recommend configuring [kube-linter](https://github.com/stackrox/kube-linter) (or
 - **Resource Management**: CPU and memory requests and limits are defined for the controller manager deployment to prevent OOMKills or node exhaustion
 - **Security Context**: Controller pod follows Restricted Pod Security Standards (`runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`)
 - **Health Probes**: Liveness (`/healthz`) and readiness (`/readyz`) probes are configured in the deployment manifest and correctly implemented in `main.go`
+- **Network Policies**: If the controller exposes network endpoints (metrics, webhooks, health probes) or communicates with external services, verify that `NetworkPolicy` resources are defined to restrict ingress and egress traffic to only the required peers and ports — default-open network access is a risk in multi-tenant or hardened clusters
 
 ### 4. OpenShift TLS Configuration Compliance
 
