@@ -49,6 +49,7 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 - Uses `ctrl.Result{RequeueAfter: duration}` for time-based scheduling instead of polling loops
 - Uses `ctrl.Result{}` with nil error for graceful stop (no unnecessary requeue)
 - Do not use `Requeue: true` as a substitute for returning an error — return errors directly for failures (controller-runtime handles requeue with backoff automatically); reserve `Requeue: true` for in-progress operations that need default backoff without an error
+- Avoid `retry.RetryOnConflict` (`k8s.io/client-go/util/retry`) inside reconcile loops — returning an error already re-enqueues the resource with exponential backoff, and the next reconciliation will re-fetch the latest object state. `RetryOnConflict` retries inline against a stale read, risking decisions based on outdated cluster state
 - Never silently swallows errors — either returns them, logs them, or records them in status
 - Wraps errors with `fmt.Errorf("context: %w", err)` for debuggable error chains
 
