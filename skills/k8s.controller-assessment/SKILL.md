@@ -73,6 +73,8 @@ After sub-skills complete, merge and normalize findings in this exact order:
 
 > This phase **always runs** after merging and deduplication. Its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
 
+Each individual sub-skill now performs its own adversarial self-validation before returning findings. This orchestrator-level validation serves as a **cross-skill consistency check** — deduplicating overlapping findings, resolving conflicting severities across skills, and catching any issues that only become apparent when viewing results holistically.
+
 After findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context. The validator's purpose is to independently verify whether each finding represents a real behavioral issue in the controller.
 
 ### Validator subagent instructions

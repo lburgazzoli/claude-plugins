@@ -84,7 +84,16 @@ Use this repeatable workflow:
    - `should` -> `Major`
    - `contextual` -> `Minor`
 6. If generated CRD manifests are unavailable in scope (or `controller-gen` cannot be executed), perform static marker/source review and mark generated-manifest checks as `Not verified` with reduced confidence.
-7. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
+7. **Adversarial self-validation**: Before producing output, critically review each finding:
+   - **Accuracy**: Does the code actually exhibit the described problem? Re-read the referenced location independently.
+   - **Behavioral impact**: Would fixing this change runtime behavior, correctness, or operational safety — or is it purely stylistic/cosmetic/theoretical?
+   - **Severity check**: A pattern that looks non-ideal but cannot cause incorrect reconciliation, data loss, or operational failure should be downgraded.
+   - Downgrade rules:
+     - Factually correct but **no behavioral impact** → downgrade one level (Critical→Major, Major→Minor, Minor→dismiss)
+     - Described problem **cannot occur** given surrounding code → dismiss entirely
+     - Severity appropriate with real impact → keep as-is
+   - Remove dismissed findings and adjust severities before scoring.
+8. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
 
 ## Scoring
 
