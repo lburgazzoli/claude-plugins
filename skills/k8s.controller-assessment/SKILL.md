@@ -92,6 +92,7 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 > 1. **Is the finding accurate?** Does the code actually exhibit the described problem?
 > 2. **Does it affect behavior?** Would fixing this change how the controller behaves at runtime, or is it purely stylistic / cosmetic / theoretical?
 > 3. **Is the severity appropriate?** A code pattern that looks non-ideal but cannot cause incorrect reconciliation, data loss, or operational failure should be downgraded.
+> 4. **Consistency check**: Cross-reference findings against positive highlights — a pattern must not appear as both a finding and a positive highlight. If a pattern is flagged as a finding, remove or reword any positive highlight that praises the same or contradictory pattern. If the same concept (e.g., a retry strategy) is used correctly in some code paths and incorrectly in others, do not praise it as a positive — only flag the problematic usage.
 >
 > **Downgrade rules**:
 > - A finding that is factually correct but has **no behavioral impact** (e.g., a minor style deviation, an extra log line, a slightly verbose but functionally correct pattern) → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)

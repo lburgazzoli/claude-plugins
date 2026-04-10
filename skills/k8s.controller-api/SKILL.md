@@ -92,6 +92,7 @@ Use this repeatable workflow:
      - Factually correct but **no behavioral impact** → downgrade one level (Critical→Major, Major→Minor, Minor→dismiss)
      - Described problem **cannot occur** given surrounding code → dismiss entirely
      - Severity appropriate with real impact → keep as-is
+   - **Consistency check**: Cross-reference findings against positive highlights — a pattern must not appear as both a finding and a positive highlight. If a pattern is flagged as a finding, remove or reword any positive highlight that praises the same or contradictory pattern. If the same concept is used correctly in some code paths and incorrectly in others, do not praise it as a positive — only flag the problematic usage.
    - Remove dismissed findings and adjust severities before scoring.
    - Validation **always runs** and its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
 8. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
