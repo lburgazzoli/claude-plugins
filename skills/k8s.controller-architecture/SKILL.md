@@ -77,6 +77,7 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 ### 5. Status, Conditions, and Observed Generation
 
 - Status is updated via the status subresource (`r.Status().Update()` or `r.Status().Patch()`)
+- Consider using Server-Side Apply for status updates (`r.Status().Patch()` with `client.Apply`) — this enables cooperative controllers to contribute to different status fields without conflicting, since each controller owns only its `fieldManager`-scoped fields. In the single-controller case the behavior is equivalent to a full status update, so there is no downside
 - Resource is re-fetched before status update to avoid "object has been modified" conflicts
 - Uses standard condition types following Kubernetes conventions:
   - `type`: PascalCase (e.g., `Ready`, `Available`, `Degraded`, `Progressing`)
