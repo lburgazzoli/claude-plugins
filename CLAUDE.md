@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │   └── marketplace.json         # Marketplace catalog
 ├── skills/                      # Claude Code skill definitions (directory per skill with SKILL.md)
 ├── hooks/                       # Event-driven hook scripts (hooks.json when populated)
+├── scripts/                     # Helper scripts (Python, shell) for skill validation and tooling
 ├── CLAUDE.md
 └── README.md
 ```
@@ -40,6 +41,10 @@ Hooks are configured via `hooks/hooks.json`. They:
 - Live in the `hooks/` directory
 - Must be executable (`chmod +x`)
 - Respond to events like tool calls, prompt submissions, etc.
+
+### Scripts
+
+Helper scripts for skill validation, evaluation, and tooling live in the `scripts/` directory. These can be Python, shell, or any language appropriate for the task.
 
 ### MCP Servers
 
