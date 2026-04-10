@@ -62,12 +62,13 @@ If parallel execution is unavailable, run the selected sub-skills sequentially u
 After sub-skills complete, merge and normalize findings in this exact order:
 
 1. Combine all findings from selected sub-skills into one list.
-2. Deduplicate overlapping findings — two findings are considered duplicates when they reference the same code location (`where`) and describe the same underlying problem. When in doubt, prefer to keep both as separate findings rather than incorrectly merging distinct issues.
-3. For each merged finding, keep a `sources` list containing every sub-skill that reported it.
-4. If two or more sub-skills report the same issue with different severities, keep the higher severity.
-5. Set `primarySource` for every finding using priority: `Architecture` > `API` > `Production Readiness`. For single-source findings, use that source. For multi-source findings, use the source that reported the higher severity; if severities tied, use the priority order.
-6. Run validation on this merged list and apply validation adjustments.
-7. Compute severity counts and scores only after the final merged severities are settled.
+2. Combine all positive highlights from selected sub-skills into one list, preserving the source sub-skill for each highlight.
+3. Deduplicate overlapping findings — two findings are considered duplicates when they reference the same code location (`where`) and describe the same underlying problem. When in doubt, prefer to keep both as separate findings rather than incorrectly merging distinct issues.
+4. For each merged finding, keep a `sources` list containing every sub-skill that reported it.
+5. If two or more sub-skills report the same issue with different severities, keep the higher severity.
+6. Set `primarySource` for every finding using priority: `Architecture` > `API` > `Production Readiness`. For single-source findings, use that source. For multi-source findings, use the source that reported the higher severity; if severities tied, use the priority order.
+7. Run validation on the merged findings and highlights, and apply validation adjustments.
+8. Compute severity counts and scores only after the final merged severities are settled.
 
 ## Validation Phase
 
@@ -81,25 +82,36 @@ After findings are merged and deduplicated, launch an **adversarial validation s
 
 Launch a separate subagent with the following brief. Do **not** share the assessment agents' context — the validator must read the code independently to avoid confirmation bias.
 
-> **Role**: You are a skeptical reviewer. Your job is to challenge each finding from a controller assessment and determine whether it actually impacts the controller's runtime behavior, correctness, or operational safety.
+> **Role**: You are a skeptical reviewer. Your job is to challenge each finding from a controller assessment and determine whether it actually impacts the controller's runtime behavior, correctness, or operational safety. You also verify that positive highlights do not contradict the findings.
 >
 > **Inputs you receive**:
 > - The merged findings list (each with: findingId, severity, primarySource, sources, area, what, where, confidence)
+> - The merged positive highlights list (each with: highlightId, source sub-skill, description)
 > - The scope (`$ARGUMENTS`) so you can read the same code
 >
 > **Your task**:
+>
+> **Part 1 — Validate findings:**
 > For each finding, independently read the code at the referenced location and evaluate:
 > 1. **Is the finding accurate?** Does the code actually exhibit the described problem?
 > 2. **Does it affect behavior?** Would fixing this change how the controller behaves at runtime, or is it purely stylistic / cosmetic / theoretical?
 > 3. **Is the severity appropriate?** A code pattern that looks non-ideal but cannot cause incorrect reconciliation, data loss, or operational failure should be downgraded.
-> 4. **Consistency check**: Cross-reference findings against positive highlights — a pattern must not appear as both a finding and a positive highlight. If a pattern is flagged as a finding, remove or reword any positive highlight that praises the same or contradictory pattern. If the same concept (e.g., a retry strategy) is used correctly in some code paths and incorrectly in others, do not praise it as a positive — only flag the problematic usage.
 >
-> **Downgrade rules**:
+> **Part 2 — Validate highlights against findings:**
+> For each positive highlight, check whether it contradicts any finding:
+> - A highlight must not praise a pattern that is also flagged as a finding. For example: praising "Controller X uses RetryOnConflict" while finding "Controllers Y and Z lack RetryOnConflict" is a contradiction — if the absence of the pattern is a problem, its presence in one place is not a highlight, it is the expected baseline.
+> - If a highlight praises a pattern whose absence is flagged as a finding anywhere in the report, mark the highlight for removal or rewording.
+> - If the same concept is used correctly in some code paths and incorrectly in others, the correct usage is not a highlight — only the incorrect usage should appear (as a finding).
+> - Highlights that do not conflict with any finding should be kept as-is.
+>
+> **Downgrade rules** (findings only):
 > - A finding that is factually correct but has **no behavioral impact** (e.g., a minor style deviation, an extra log line, a slightly verbose but functionally correct pattern) → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)
 > - A finding where the described problem **cannot occur** given the surrounding code (e.g., "missing nil check" when the value is guaranteed non-nil by an earlier guard) → dismiss entirely
 > - A finding where the severity is appropriate and the behavioral impact is real → keep as-is
 >
-> **Output schema** (return one entry per finding):
+> **Output schema**:
+>
+> Finding validations (one entry per finding):
 > ```
 > findingId: <number matching the merged findings list>
 > originalSeverity: Critical / Major / Minor
@@ -107,16 +119,32 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 > verdict: Confirmed / Downgraded / Dismissed
 > reason: <1-2 sentences explaining why — reference specific code evidence>
 > ```
+>
+> Highlight validations (one entry per highlight that needs adjustment):
+> ```
+> highlightId: <number matching the merged highlights list>
+> verdict: Keep / Remove / Reword
+> reason: <1-2 sentences explaining the contradiction with a specific finding>
+> suggestedRewording: <if verdict is Reword, the revised text — omit if Remove or Keep>
+> ```
 
 ### Applying validation results
 
 After the validator returns:
+
+**Finding adjustments:**
 
 1. Update each finding's severity to the `validatedSeverity`.
 2. Remove any finding with `validatedSeverity: Dismissed`.
 3. For downgraded findings, append the validator's reason to the finding's `Not verified` field as: `Downgraded from <original> — <reason>`.
 4. Recompute severity counts and scores using the validated severities.
 5. If `--details` is active, include a **Validation** section after the Findings section listing all verdict changes (downgrades and dismissals) with reasons.
+
+**Highlight adjustments:**
+
+6. Remove any highlight with `verdict: Remove`.
+7. Replace any highlight with `verdict: Reword` with the validator's `suggestedRewording`.
+8. Keep all highlights with `verdict: Keep` unchanged.
 
 ### Skipping validation
 
