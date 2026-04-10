@@ -219,9 +219,7 @@ For each finding (numbered to match the summary table), produce:
 
 ### Validation (only with `--details`)
 
-This section is only included when the `--details` flag is passed and the validation phase produced changes.
-
-List each downgraded or dismissed finding:
+**Do NOT include this section unless `--details` is passed.** When `--details` is active and the validation phase produced changes, list each downgraded or dismissed finding:
 
 | # | Original Severity | Validated Severity | Verdict | Reason |
 |---|-------------------|--------------------|---------|--------|
