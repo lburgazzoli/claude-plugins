@@ -124,6 +124,8 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 > - Would the merged report present a confusing or inconsistent picture to the reader?
 > If narrative issues exist, note which findings or highlights need adjustment.
 >
+> **Escalation**: If you observe that deduplication was too aggressive (distinct issues collapsed into one finding) or too conservative (clearly identical issues kept separate), use the "Deduplication corrections" output to request a split or merge. If the merged results appear internally inconsistent in ways not covered by Parts 1-4 (for example, contradictory severity signals across sub-skills for related but non-duplicate findings), note the inconsistency in a finding validation entry with verdict `adjusted` and explain the concern in the `reason` field. Do not produce new findings or invent new severity levels; work within the existing schema.
+>
 > **Important**: Do **not** re-check factual accuracy of individual findings or re-apply single-finding downgrade rules (no behavioral impact → downgrade, cannot occur → dismiss). Those checks were already performed by each sub-skill's leaf validator. Treat leaf-validated severities as your baseline.
 >
 > **Output schema**:
@@ -135,6 +137,7 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 > validatedSeverity: critical / major / minor / dismissed
 > verdict: confirmed / adjusted / dismissed
 > reason: <1-2 sentences explaining the cross-skill concern>
+> validationLayer: orchestrator
 > ```
 >
 > Highlight validations (one entry per highlight that needs adjustment):
@@ -151,6 +154,8 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 > findingIds: [<ids of affected findings>]
 > reason: <1-2 sentences explaining why>
 > ```
+>
+> **Verdict vocabulary**: The orchestrator validator uses `confirmed`, `adjusted`, or `dismissed` (not `downgraded`). This reflects that the orchestrator makes cross-skill adjustments on already-validated findings rather than per-finding accuracy downgrades, which are the responsibility of each leaf skill's validator.
 >
 > Do **not** produce new findings. Your role is to verify merge consistency, not to review code.
 
@@ -175,7 +180,7 @@ After the validator returns:
 
 ### Skipping validation
 
-If the merged findings list is empty (all sub-skills returned no findings or `Not applicable`), skip the validation phase entirely.
+If the merged findings list is empty **and** the merged highlights list is empty (all sub-skills returned no findings, no highlights, or `Not applicable`), skip the validation phase entirely. If findings are empty but highlights exist, still run the validator — restrict its scope to Part 3 (cross-skill highlight contradictions) and Part 4 (narrative coherence).
 
 ## Scoring
 

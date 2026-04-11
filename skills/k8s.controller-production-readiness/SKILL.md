@@ -135,7 +135,7 @@ After the primary analysis produces draft findings and draft highlights, launch 
 >
 > **Inputs you receive**:
 > - The draft findings list (each following the canonical finding model from `validation-output-schema.md`)
-> - The draft positive highlights list (each with: `id`, `description`)
+> - The draft positive highlights list (each with: `id`, `sourceSkill`, `description`). For this leaf skill, `sourceSkill` is always `k8s.controller-production-readiness`
 > - The scope so you can read the same code
 >
 > **Your task**:
@@ -167,6 +167,7 @@ After the primary analysis produces draft findings and draft highlights, launch 
 > validatedSeverity: critical / major / minor / dismissed
 > verdict: confirmed / downgraded / dismissed
 > reason: <1-2 sentences explaining why — reference specific code evidence>
+> validationLayer: leaf
 > ```
 >
 > Highlight validations (one entry per highlight that needs adjustment):
@@ -176,6 +177,8 @@ After the primary analysis produces draft findings and draft highlights, launch 
 > reason: <1-2 sentences explaining the contradiction with a specific finding>
 > suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
 > ```
+>
+> **Verdict vocabulary**: Leaf validators use `confirmed`, `downgraded`, or `dismissed`. The orchestrator validator uses `confirmed`, `adjusted`, or `dismissed` instead, because it operates on already-validated findings and makes cross-skill adjustments rather than per-finding accuracy checks.
 >
 > Do **not** produce new findings. Your role is to validate, not to review.
 
@@ -269,6 +272,11 @@ For each finding (numbered to match the summary table), produce:
 
 | # | Original Severity | Validated Severity | Verdict | Reason |
 |---|-------------------|--------------------|---------|--------|
+
+Highlight validation changes (only when one or more highlights were removed or reworded):
+
+| Highlight | Verdict | Reason | Suggested Rewording |
+|-----------|---------|--------|---------------------|
 
 ### Positive Highlights
 
