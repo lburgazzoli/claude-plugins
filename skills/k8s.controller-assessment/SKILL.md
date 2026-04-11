@@ -32,6 +32,10 @@ Validate `--scope=<list>` values strictly:
 - If any value is unknown, stop before running the assessment and ask the user to confirm whether it is intentional or a typo.
 - If `--scope` is present but resolves to an empty list after parsing, stop and ask for a valid scope.
 
+## References
+
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report, finding, evidence, highlight, and validation model used by validation-style skills.
+
 ## Execution
 
 Resolve selected sub-skills from `--scope` first:
@@ -64,9 +68,9 @@ After sub-skills complete, merge and normalize findings in this exact order:
 1. Combine all findings from selected sub-skills into one list.
 2. Combine all positive highlights from selected sub-skills into one list, preserving the source sub-skill for each highlight.
 3. Deduplicate overlapping findings — two findings are considered duplicates when they reference the same code location (`where`) and describe the same underlying problem. When in doubt, prefer to keep both as separate findings rather than incorrectly merging distinct issues.
-4. For each merged finding, keep a `sources` list containing every sub-skill that reported it.
+4. For each merged finding, keep a `sources` list containing every sub-skill that reported it, using canonical skill identifiers from [validation-output-schema.md](../../references/validation-output-schema.md) (`k8s.controller-architecture`, `k8s.controller-api`, `k8s.controller-production-readiness`).
 5. If two or more sub-skills report the same issue with different severities, keep the higher severity.
-6. Set `primarySource` for every finding using priority: `Architecture` > `API` > `Production Readiness`. For single-source findings, use that source. For multi-source findings, use the source that reported the higher severity; if severities tied, use the priority order.
+6. Set `primarySource` for every finding using this priority order: `k8s.controller-architecture` > `k8s.controller-api` > `k8s.controller-production-readiness`. For single-source findings, use that source. For multi-source findings, use the source that reported the higher severity; if severities tied, use the priority order.
 7. Run validation on the merged findings and highlights, and apply validation adjustments.
 8. Compute severity counts and scores only after the final merged severities are settled.
 
@@ -75,6 +79,7 @@ After sub-skills complete, merge and normalize findings in this exact order:
 > This phase **always runs** after merging and deduplication. Its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
 
 Each individual sub-skill now performs its own adversarial self-validation before returning findings. This orchestrator-level validation serves as a **cross-skill consistency check** — deduplicating overlapping findings, resolving conflicting severities across skills, and catching any issues that only become apparent when viewing results holistically.
+For the final merged report, this orchestrator-level validation is authoritative.
 
 After findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context. The validator's purpose is to independently verify whether each finding represents a real behavioral issue in the controller.
 
@@ -85,8 +90,8 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 > **Role**: You are a skeptical reviewer. Your job is to challenge each finding from a controller assessment and determine whether it actually impacts the controller's runtime behavior, correctness, or operational safety. You also verify that positive highlights do not contradict the findings.
 >
 > **Inputs you receive**:
-> - The merged findings list (each with: findingId, severity, primarySource, sources, area, what, where, confidence)
-> - The merged positive highlights list (each with: highlightId, source sub-skill, description)
+> - The merged findings list (each extending the base finding model from `validation-output-schema.md` with `sources` and `primarySource`)
+> - The merged positive highlights list (each with: `id`, `sourceSkill`, `description`)
 > - The scope (`$ARGUMENTS`) so you can read the same code
 >
 > **Your task**:
@@ -113,19 +118,19 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 >
 > Finding validations (one entry per finding):
 > ```
-> findingId: <number matching the merged findings list>
-> originalSeverity: Critical / Major / Minor
-> validatedSeverity: Critical / Major / Minor / Dismissed
-> verdict: Confirmed / Downgraded / Dismissed
+> findingId: <id matching the merged findings list>
+> originalSeverity: critical / major / minor
+> validatedSeverity: critical / major / minor / dismissed
+> verdict: confirmed / downgraded / dismissed
 > reason: <1-2 sentences explaining why — reference specific code evidence>
 > ```
 >
 > Highlight validations (one entry per highlight that needs adjustment):
 > ```
-> highlightId: <number matching the merged highlights list>
-> verdict: Keep / Remove / Reword
+> highlightId: <id matching the merged highlights list>
+> verdict: keep / remove / reword
 > reason: <1-2 sentences explaining the contradiction with a specific finding>
-> suggestedRewording: <if verdict is Reword, the revised text — omit if Remove or Keep>
+> suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
 > ```
 
 ### Applying validation results
@@ -135,16 +140,16 @@ After the validator returns:
 **Finding adjustments:**
 
 1. Update each finding's severity to the `validatedSeverity`.
-2. Remove any finding with `validatedSeverity: Dismissed`.
-3. For downgraded findings, append the validator's reason to the finding's `Not verified` field as: `Downgraded from <original> — <reason>`.
+2. Remove any finding with `validatedSeverity: dismissed`.
+3. Keep downgrade and dismissal rationale in the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
 4. Recompute severity counts and scores using the validated severities.
 5. If `--details` is active, include a **Validation** section after the Findings section listing all verdict changes (downgrades and dismissals) with reasons.
 
 **Highlight adjustments:**
 
-6. Remove any highlight with `verdict: Remove`.
-7. Replace any highlight with `verdict: Reword` with the validator's `suggestedRewording`.
-8. Keep all highlights with `verdict: Keep` unchanged.
+6. Remove any highlight with `verdict: remove`.
+7. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
+8. Keep all highlights with `verdict: keep` unchanged.
 
 ### Skipping validation
 
@@ -157,6 +162,10 @@ Compute scores **after** the validation phase (using validated severities). Reco
 - Each merged finding contributes to every sub-skill listed in its `sources`.
 - Use the merged finding's final severity (post-validation) for every contributing sub-skill.
 - Do not duplicate a finding more than once within the same sub-skill score.
+- For Architecture rescoring, preserve the original architecture area name and map it to categories as follows:
+  - Category A: `Reconciliation Idempotency and State Handling`, `Error Handling and Requeue Strategy`, `RBAC Least Privilege and Security`, `Status, Conditions, and Observed Generation`, `Ownership, Finalizers, and Cleanup Logic`
+  - Category B: `Resource Management and API Efficiency`, `Performance and Cache Usage`, `Cache Consistency and Client Type Alignment`
+  - If an Architecture finding is missing one of these exact area names, keep the finding in the merged report but mark Architecture rescoring as reduced-confidence in the summary rather than guessing a category
 
 Sub-skill scoring models:
 - **Architecture**: uses weighted categories — Category A (Areas 1, 2, 4, 5, 6) at 60% and Category B (Areas 3, 7, 8) at 40%. Start each category at 100, deduct per finding, floor at 0, then compute `Architecture = A × 0.60 + B × 0.40`.
@@ -191,6 +200,14 @@ Interpretation:
 Merge findings from selected sub-skills into a single report. Deduplicate overlapping findings that refer to the same underlying issue. Preserve full source attribution per finding (`sources`). If skills conflict on severity for the same issue, prefer the higher severity. If severity still ties, use source priority for display (`primarySource`): `Architecture` > `API` > `Production Readiness`.
 
 All sections are always included unless noted otherwise.
+Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md). Merged findings extend the base finding model with `sources` and `primarySource`.
+
+Output conventions:
+
+- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `controller://MyReconciler`)
+- `where` should use repo-relative GitHub-style location strings (for example, `controllers/myresource_controller.go#L118-L146`)
+- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
+- Store `sources` and `primarySource` as canonical skill identifiers; derive display labels from them only when rendering Markdown
 
 ### Summary
 
@@ -219,8 +236,8 @@ Findings summary table (one row per finding, sorted by severity then by primary 
 | # | Severity | Source | Area | What | Where | Confidence |
 |---|----------|--------|------|------|-------|------------|
 
-- **Source**: Display `primarySource` (Architecture, API, Production Readiness). If multiple sub-skills identified the same merged finding, optionally append `(+N more)` and list all contributors in `--details`.
-- **Where** must include a concrete file path and line reference for every Critical and Major finding.
+- **Source**: Display a human label derived from `primarySource` (`k8s.controller-architecture` -> `Architecture`, `k8s.controller-api` -> `API`, `k8s.controller-production-readiness` -> `Production Readiness`). If multiple sub-skills identified the same merged finding, optionally append `(+N more)` and list all contributors in `--details`.
+- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
 
 ### Findings (only with `--details`)
 
@@ -233,12 +250,12 @@ For each finding (numbered to match the summary table), produce:
 | | |
 |---|---|
 | **Severity** | Critical / Major / Minor |
-| **Source** | Architecture / API / Production Readiness |
-| **Also reported by** | Additional sources from `sources` beyond `primarySource` (or `—`) |
+| **Source** | Human label derived from canonical `primarySource` |
+| **Also reported by** | Human labels derived from `sources` beyond `primarySource` (or `—`) |
 | **Area** | Assessment area name |
-| **Where** | File and line reference |
+| **Where** | GitHub-style location string(s) |
 | **Confidence** | High / Medium / Low |
-| **Not verified** | Any assumptions or runtime checks not validated (or `—`) |
+| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
 
 **Why**: Explanation of why this is an issue.
 
@@ -248,10 +265,17 @@ For each finding (numbered to match the summary table), produce:
 
 ### Validation (only with `--details`)
 
-**Do NOT include this section unless `--details` is passed.** When `--details` is active and the validation phase produced changes, list each downgraded or dismissed finding:
+**Do NOT include this section unless `--details` is passed.** When `--details` is active and the validation phase produced changes, include the following tables as needed.
+
+Finding validation changes:
 
 | # | Original Severity | Validated Severity | Verdict | Reason |
 |---|-------------------|--------------------|---------|--------|
+
+Highlight validation changes (only when one or more highlights were removed or reworded):
+
+| Highlight | Verdict | Reason | Suggested Rewording |
+|-----------|---------|--------|---------------------|
 
 ### Positive Highlights
 

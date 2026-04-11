@@ -26,6 +26,7 @@ When this skill is invoked by `/k8s.controller-assessment`, it should receive on
 ## References
 
 Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritative source of conventions and high-quality reference implementations.
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical finding, evidence, highlight, and validation model used by validation-style skills.
 
 ## Assessment Areas
 
@@ -70,34 +71,34 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 
 ### 3. Deployment Hardening
 
-Recommend configuring [kube-linter](https://github.com/stackrox/kube-linter) (or equivalent policy/lint tooling) if not already in use. Verify the following checks are enabled and passing:
+Recommend policy or lint tooling such as [kube-linter](https://github.com/stackrox/kube-linter) when the project ships deployment manifests. Treat the following checks as operational-readiness and deployment-hardening signals; severity should depend on the target environment and delivery model rather than being treated as direct proof of controller correctness
 
 - **Resource Management**: CPU and memory requests and limits are defined for the controller manager deployment to prevent OOMKills or node exhaustion
-- **Security Context**: Controller pod follows Restricted Pod Security Standards (`runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`)
+- **Security Context**: Controller pods should generally trend toward Restricted Pod Security Standards (`runAsNonRoot: true`, `allowPrivilegeEscalation: false`). Treat `readOnlyRootFilesystem: true` as a strong recommendation when the image and runtime layout support it
 - **Health Probes**: Liveness (`/healthz`) and readiness (`/readyz`) probes are configured in the deployment manifest and correctly implemented in `main.go`
-- **Network Policies**: If the controller exposes network endpoints (metrics, webhooks, health probes) or communicates with external services, verify that `NetworkPolicy` resources are defined to restrict ingress and egress traffic to only the required peers and ports — default-open network access is a risk in multi-tenant or hardened clusters
+- **Network Policies**: If the controller exposes network endpoints (metrics, webhooks, health probes) or communicates with external services, assess whether `NetworkPolicy` resources are expected for the target environment. Their absence is a stronger finding in hardened or multi-tenant clusters than in permissive internal environments
 
 ### 4. OpenShift TLS Configuration Compliance
 
 > Only applicable when the controller/operator targets OpenShift. Skip this section if the controller is platform-agnostic or targets vanilla Kubernetes only.
 
-OpenShift requires all components to dynamically inherit TLS settings from the platform's central configuration rather than hardcoding them. This is a release blocker as of OCP 4.23/5.0 and is driven by Post-Quantum Cryptography (PQC) readiness — PQC-resilient algorithms (ML-KEM key encapsulation) are available only in TLS 1.3+, so components must follow the cluster-wide TLS profile to enable platform-wide PQC adoption in one pass.
+For OpenShift-targeted operators, verify current platform guidance before treating TLS configuration as a hard requirement. Favor findings that are anchored in current OpenShift documentation over version-specific or time-sensitive assumptions. If the exact OpenShift requirement cannot be confirmed from the references available in scope, mark the check as `Not verified` and do not describe it as a release blocker.
 
-- **No hardcoded TLS configuration**: No local or hardcoded TLS protocol versions, cipher suites, or curves in the codebase or deployment manifests
-- **Central TLS source**: The component fetches its TLS server settings from one of the three platform configuration sources:
+- **No hardcoded TLS configuration**: No local or hardcoded server-side TLS protocol versions, cipher suites, or curves in the codebase or deployment manifests unless the deviation is intentional, configurable, and documented
+- **Central TLS source**: When current OpenShift guidance requires platform-managed TLS, the component fetches its TLS server settings from the appropriate central configuration source instead of relying on local defaults:
   - **API Server configuration** — default for most components
   - **Kubelet configuration** — for components running on nodes
   - **Ingress configuration** — for components serving ingress traffic
-- **Explicit TLS profile respect**: The component explicitly applies all TLS profile settings; it must not rely on Go `crypto/tls` defaults
-- **Custom TLS profiles**: The component correctly handles custom TLS profiles defined by customers, not just the named presets (Old, Intermediate, Modern)
-- **Managed CRs**: TLS settings must apply to all CRs that the operator manages, not just the operator process itself
-- **Server-side scope**: This requirement applies to TLS server settings only; client TLS settings are not in scope
-- **Opt-out with documentation**: If the component has a legitimate reason to deviate from the cluster-wide TLS default, it must expose its own configuration knob that defaults to the cluster-wide config, and the deviation must be clearly documented
+- **Explicit TLS profile respect**: When the component is expected to honor the platform TLS profile, it explicitly applies the relevant settings instead of silently relying on Go `crypto/tls` defaults
+- **Custom TLS profiles**: The component correctly handles customer-defined TLS profiles where platform-managed TLS is part of the product contract, not just the named presets (Old, Intermediate, Modern)
+- **Managed operands**: When the operator configures server TLS for managed operands or exposes TLS-related CR fields, verify those settings inherit from the intended cluster or operator-level source; do not assume every managed CR must expose its own TLS knobs
+- **Server-side scope**: This section applies to TLS server settings exposed by the operator, its webhooks, or managed operands. Client TLS settings are not in scope
+- **Opt-out with documentation**: If the component has a legitimate reason to deviate from the cluster-wide TLS default, it should expose its own configuration knob that defaults to the cluster-wide config, and the deviation should be clearly documented
 
 Severity mapping:
-- Hardcoded TLS config or ignoring central TLS source: `must` (Critical)
-- Not handling custom TLS profiles: `should` (Major)
-- Missing documentation for opt-out deviations: `contextual` (Minor)
+- Hardcoded TLS config or ignoring a required central TLS source when current OpenShift guidance clearly applies: `must` (Critical)
+- Not handling custom TLS profiles where platform-managed TLS is required: `should` (Major)
+- Missing documentation for an intentional opt-out deviation: `contextual` (Minor)
 
 ## Assessment Procedure
 
@@ -145,6 +146,13 @@ Interpretation:
 ## Output Format
 
 Produce the assessment in this format. All sections are always included unless noted otherwise.
+Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md).
+
+Output conventions:
+
+- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `controller://MyReconciler`)
+- `where` should use repo-relative GitHub-style location string(s) (for example, `controllers/myresource_controller.go#L118-L146`)
+- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
 
 ### Summary
 
@@ -170,7 +178,7 @@ Findings summary table (one row per finding, sorted by severity then by area):
 | # | Severity | Area | What | Where | Confidence |
 |---|----------|------|------|-------|------------|
 
-- **Where** must include a concrete file path and line reference for every Critical and Major finding.
+- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
 
 ### Findings (only with `--details`)
 
@@ -184,9 +192,9 @@ For each finding (numbered to match the summary table), produce:
 |---|---|
 | **Severity** | Critical / Major / Minor |
 | **Area** | Assessment area name |
-| **Where** | File and line reference |
+| **Where** | GitHub-style location string(s) |
 | **Confidence** | High / Medium / Low |
-| **Not verified** | Any assumptions or runtime checks not validated (or `—`) |
+| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
 
 **Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
 

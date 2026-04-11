@@ -26,13 +26,14 @@ When this skill is invoked by `/k8s.controller-assessment`, it should receive on
 ## References
 
 Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritative source of conventions and high-quality reference implementations.
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical finding, evidence, highlight, and validation model used by validation-style skills.
 
 ## Assessment Areas
 
 ### 1. Reconciliation Idempotency and State Handling
 
-- Each controller should have a single responsibility with clear inputs/outputs — follow Unix philosophy where each controller does one thing well
-- Adopt a consistent reconcile structure: fetch resource, handle finalization, initialize conditions, reconcile, patch status (Knative pattern — see [cluster-api](https://github.com/kubernetes-sigs/cluster-api) reconcilers for a well-structured example)
+- Each controller should ideally have a clear responsibility with understandable inputs and outputs. Treat this as a strong default rather than a universal rule; broader controllers can still be valid when their boundaries are intentional and operationally coherent
+- Prefer a consistent reconcile structure such as: fetch resource, handle finalization, initialize conditions, reconcile, patch status. Patterns used by projects such as Knative and [cluster-api](https://github.com/kubernetes-sigs/cluster-api) are useful references, but review for internal consistency rather than strict adherence to one framework-specific shape
 - Reconcile function produces the same result regardless of how many times it runs for the same input state
 - State is reconstructed from observed state, not cached or assumed from previous reconciliation
 - No side effects on no-op reconciliations (no unnecessary updates, patches, or event emissions)
@@ -45,11 +46,17 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 
 - Distinguishes between recoverable (transient) and non-recoverable (permanent) errors
 - Transient errors (API server unavailable, conflict) return error to trigger exponential backoff requeue
-- Permanent errors (invalid spec, missing referenced resource) update status conditions without returning error
+- For user-fixable or long-lived spec issues (for example, invalid spec or missing referenced resources), prefer surfacing the problem in status conditions and avoid hot-looping on repeated errors. Returning an error can still be appropriate when it materially improves retry behavior or observability
 - Uses `ctrl.Result{RequeueAfter: duration}` for time-based scheduling instead of polling loops
 - Uses `ctrl.Result{}` with nil error for graceful stop (no unnecessary requeue)
 - Do not use `Requeue: true` as a substitute for returning an error — return errors directly for failures (controller-runtime handles requeue with backoff automatically); reserve `Requeue: true` for in-progress operations that need default backoff without an error
-- Prefer letting the reconcile loop handle conflicts naturally over using `retry.RetryOnConflict` (`k8s.io/client-go/util/retry`) — returning an error already re-enqueues the resource with exponential backoff, and the next reconciliation will re-fetch the latest object state. `RetryOnConflict` retries inline against a potentially stale read, risking decisions based on outdated cluster state. Classify as `contextual` (Minor) rather than a hard requirement
+- Conflict handling is contextual. Many controller-runtime reconcilers correctly handle optimistic concurrency by returning patch or update errors and relying on the next reconcile to re-fetch fresh state
+- `retry.RetryOnConflict` (`k8s.io/client-go/util/retry`) can be appropriate for bounded read-modify-write sections where an immediate local retry is simpler or more efficient than exiting the reconcile
+- Review whether the controller's chosen pattern is coherent with its write style:
+  - controllers that accumulate changes in memory and write them back with a single patch near the end of reconcile often return the conflict error and let the next reconcile fetch fresh state instead of retrying inline (for example, the common Cluster API-style deferred patch pattern)
+  - SSA-based writes may encounter field-manager conflicts instead of classic update conflicts
+  - explicit `RetryOnConflict` loops should re-read state correctly and avoid making decisions from stale assumptions
+- Classify this area as `contextual` (Minor) unless there is evidence of lost updates, stale-state decisions, or hot-looping
 - Never silently swallows errors — either returns them, logs them, or records them in status
 - Wraps errors with `fmt.Errorf("context: %w", err)` for debuggable error chains
 
@@ -77,7 +84,7 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 ### 5. Status, Conditions, and Observed Generation
 
 - Status is updated via the status subresource (`r.Status().Update()` or `r.Status().Patch()`)
-- Consider using Server-Side Apply for status updates (`r.Status().Patch()` with `client.Apply`) — this enables cooperative controllers to contribute to different status fields without conflicting, since each controller owns only its `fieldManager`-scoped fields. In the single-controller case the behavior is equivalent to a full status update, so there is no downside
+- Consider Server-Side Apply for status updates (`r.Status().Patch()` with `client.Apply`) when multiple actors may contribute to status and field ownership needs to stay explicit. In single-controller cases this can still be a good fit, but treat it as a design choice rather than a universal upgrade over ordinary status patch/update flows
 - Resource is re-fetched before status update to avoid "object has been modified" conflicts
 - Uses standard condition types following Kubernetes conventions:
   - `type`: PascalCase (e.g., `Ready`, `Available`, `Degraded`, `Progressing`)
@@ -97,7 +104,8 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 - Set `ReaderFailOnMissingInformer: true` on the manager to prevent hidden on-the-fly informer creation from undeclared resource queries (see also Area 8 for cache alignment implications)
 - Owner references are set on child resources for automatic garbage collection
 - Does not set cross-namespace owner references (not supported)
-- Finalizers are only used when strictly necessary — specifically for cleanup of external resources not managed by Kubernetes garbage collection (e.g., cloud infrastructure, external databases, DNS records). If all child resources are Kubernetes-native and have owner references, finalizers add unnecessary complexity and should not be used
+- Finalizers are used when deletion must be gated on cleanup, ordered teardown, or asynchronous work completion. Cleanup of external resources is the most common case, but not the only legitimate one
+- If child resources are fully Kubernetes-native and owner references are sufficient, a finalizer may be unnecessary. Treat this as a design choice to evaluate, not a blanket anti-pattern
 - When a finalizer is needed, it is added early (before creating external resources) and removed only after cleanup succeeds
 - Finalizer name follows convention: `<group>/<finalizer-name>` (e.g., `mygroup.example.com/cleanup`)
 - Cleanup logic is idempotent (safe to run multiple times)
@@ -178,8 +186,8 @@ Execution model:
 1. Launch one subagent per category and run the two category checks in parallel.
 2. Give each subagent explicit scope, expected evidence format (file path plus line references), and severity expectations.
 3. Require each subagent to return findings using this schema:
-   - `findingId`, `area`, `severity`, `what`, `where`, `why`, `fix`, `confidence`, `unknowns`
-   - `where` must include concrete file path and line reference for each `Critical` or `Major` finding
+   - `id`, `title`, `area`, `severity`, `what`, `where`, `why`, `fix`, `confidence`, `notVerified`
+   - `where` should use repo-relative GitHub-style location string(s), especially for each `Critical` or `Major` finding
    - Assign category-prefixed IDs (`A-1`, `A-2`, ... for Category A; `B-1`, `B-2`, ... for Category B). The parent agent reassigns sequential IDs after merge.
 4. Require each subagent to return positive highlights.
 5. Merge results in the parent agent, deduplicate overlapping findings, normalize severity using the mapping above, and produce one final report in the output format below.
@@ -216,6 +224,13 @@ When Category A and Category B scores diverge by more than 20 points, call out t
 ## Output Format
 
 Produce the assessment in this format. All sections are always included unless noted otherwise.
+Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md).
+
+Output conventions:
+
+- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `controller://MyReconciler`)
+- `where` should use repo-relative GitHub-style location string(s) (for example, `controllers/myresource_controller.go#L118-L146`)
+- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
 
 ### Summary
 
@@ -243,7 +258,7 @@ Findings summary table (one row per finding, sorted by severity then by area):
 | # | Severity | Area | What | Where | Confidence |
 |---|----------|------|------|-------|------------|
 
-- **Where** must include a concrete file path and line reference for every Critical and Major finding.
+- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
 
 ### Findings (only with `--details`)
 
@@ -257,9 +272,9 @@ For each finding (numbered to match the summary table), produce:
 |---|---|
 | **Severity** | Critical / Major / Minor |
 | **Area** | Assessment area name |
-| **Where** | File and line reference |
+| **Where** | GitHub-style location string(s) |
 | **Confidence** | High / Medium / Low |
-| **Not verified** | Any assumptions or runtime checks not validated (or `—`) |
+| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
 
 **Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
 

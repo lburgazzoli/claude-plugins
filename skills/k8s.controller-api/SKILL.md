@@ -26,6 +26,7 @@ When this skill is invoked by `/k8s.controller-assessment`, it should receive on
 ## References
 
 Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritative source of conventions and high-quality reference implementations.
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical finding, evidence, highlight, and validation model used by validation-style skills.
 
 ## Assessment Areas
 
@@ -44,8 +45,13 @@ Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritativ
 
 ### 2. API Versioning
 
-- API versioning follows Kubernetes conventions (v1alpha1 → v1beta1 → v1)
-- Conversion webhooks are implemented when multiple versions coexist
+- API versioning often follows a maturation path such as `v1alpha1` → `v1beta1` → `v1`, but not every API needs every stage. Review whether version naming, stability expectations, and migration semantics are clear and consistent
+- For multi-version CRDs, `served`, `storage`, and deprecation semantics are intentional and documented
+- Deprecated versions have a clear migration path and are not left served indefinitely without justification
+- Multi-version CRDs use an appropriate conversion strategy. Use a conversion webhook when schema or semantic differences require it; do not assume every multi-version CRD needs a webhook
+- Conversions preserve semantic meaning across versions and avoid silent data loss on round-trip conversion
+- Validation and defaulting changes across versions are compatibility-safe: avoid tightening validation, changing defaults, or dropping fields in ways that break existing stored objects or upgrades
+- Favor additive schema evolution where possible. Treat breaking field renames, enum changes, or required-field additions as high-risk unless there is an explicit migration or compatibility strategy
 - `+kubebuilder:storageversion` marker is present on exactly one version when multiple API versions coexist (`must`). For single-version CRDs the marker is recommended but its absence is not an error (`contextual`).
 
 ### 3. Webhooks (if present)
@@ -56,18 +62,29 @@ Skip this area entirely if the project has no admission webhooks. Only assess wh
 - Validating webhook rejects invalid input
 - Failure policy is explicitly set (`Fail` or `Ignore`) based on criticality
 - `sideEffects` is declared (typically `None`)
+- `timeoutSeconds` is explicitly set and kept small enough to avoid stalling admission
+- `admissionReviewVersions` is current and compatible with the target clusters
+- `matchPolicy`, rules, and any namespace or object selectors are intentional and do not accidentally bypass required admission coverage
+- Webhook scope is tight: only the intended groups, versions, resources, and operations are intercepted
+- Dry-run behavior is consistent with the declared `sideEffects`
+- Avoid long-running logic or external dependencies on the admission path unless they are clearly necessary and failure-tolerant
+- For simple validation logic, consider whether `ValidatingAdmissionPolicy` is a better fit than a validating webhook. Treat this as a recommendation (`should`/`contextual`), not a blocker
+- Prefer `ValidatingAdmissionPolicy` for declarative, object-local validation rules; reserve validating webhooks for logic that needs custom code, cross-object awareness, mutation/defaulting, or behavior not expressible cleanly in policy/CEL
 - Webhook certificate rotation is handled
 
 ### 4. CRD Generation and Marker Correctness
 
-- Consider explicitly marking fields as `+required` or `+optional` to avoid ambiguity
+- Consider explicitly marking fields with kubebuilder/controller-gen validation markers such as `+kubebuilder:validation:Required` and `+optional` to avoid ambiguity
 - Be aware that zero values pass required field validation (OpenAPI checks non-null only) — use `MinLength`, `Minimum` markers when meaningful
 - Inspect generated CRD manifests — controller-gen may silently ignore unrecognized markers:
   - Check for typos in `+kubebuilder:` markers by comparing against the known set (`validation`, `default`, `printcolumn`, `rbac`, `object`, `subresource`, etc.) — any unrecognized marker is silently dropped
   - Verify marker/field type alignment — e.g., `+kubebuilder:validation:Minimum=1` on a string field produces no validation in the generated CRD
   - Check `+kubebuilder:validation:Enum` values match the corresponding const block defining valid values
+- Review CEL validation (`+kubebuilder:validation:XValidation` / `x-kubernetes-validations`) when cross-field invariants, conditional requirements, or immutability rules exist
+- Prefer CEL for declarative validation that is local to the object; keep validating webhooks for cases that need external lookups, mutation, or more complex programmatic checks
+- Verify CEL rules remain compatible with version evolution and do not unintentionally reject older persisted objects after schema changes
 - Watch out for nested defaulting: when a nested struct field has `+kubebuilder:default:` markers, the parent field must have `+kubebuilder:default:{}` or the nested defaults are never applied
-- Verify `+kubebuilder:object:root:=true` is present on root types and that generated deepcopy files (`zz_generated.deepcopy.go`) are not stale relative to current type definitions
+- Verify `+kubebuilder:object:root=true` is present on root types and that generated deepcopy files (`zz_generated.deepcopy.go`) are not stale relative to current type definitions
 - Always review generated output rather than trusting markers blindly
 
 ## Assessment Procedure
@@ -116,6 +133,13 @@ Interpretation:
 ## Output Format
 
 Produce the assessment in this format. All sections are always included unless noted otherwise.
+Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md).
+
+Output conventions:
+
+- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `api://group/version/Kind`)
+- `where` should use repo-relative GitHub-style location string(s) (for example, `api/v1alpha1/myresource_types.go#L42-L49`)
+- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
 
 ### Summary
 
@@ -141,7 +165,7 @@ Findings summary table (one row per finding, sorted by severity then by area):
 | # | Severity | Area | What | Where | Confidence |
 |---|----------|------|------|-------|------------|
 
-- **Where** must include a concrete file path and line reference for every Critical and Major finding.
+- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
 
 ### Findings (only with `--details`)
 
@@ -155,9 +179,9 @@ For each finding (numbered to match the summary table), produce:
 |---|---|
 | **Severity** | Critical / Major / Minor |
 | **Area** | Assessment area name |
-| **Where** | File and line reference |
+| **Where** | GitHub-style location string(s) |
 | **Confidence** | High / Medium / Low |
-| **Not verified** | Any assumptions or runtime checks not validated (or `—`) |
+| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
 
 **Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
 
