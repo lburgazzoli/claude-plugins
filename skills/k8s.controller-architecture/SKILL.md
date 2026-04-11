@@ -55,7 +55,7 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
 - Review whether the controller's chosen pattern is coherent with its write style:
   - controllers that accumulate changes in memory and write them back with a single patch near the end of reconcile often return the conflict error and let the next reconcile fetch fresh state instead of retrying inline (for example, the common Cluster API-style deferred patch pattern)
   - SSA-based writes may encounter field-manager conflicts instead of classic update conflicts
-  - explicit `RetryOnConflict` loops should re-read state correctly and avoid making decisions from stale assumptions
+  - explicit `RetryOnConflict` loops should re-read state correctly and avoid making decisions from stale assumptions — in particular, `observedGeneration` must be set from the generation captured at reconcile entry, not from the re-fetched object's `.metadata.generation` inside the retry closure (see Area 5)
 - Classify this area as `contextual` (Minor) unless there is evidence of lost updates, stale-state decisions, or hot-looping
 - Never silently swallows errors — either returns them, logs them, or records them in status
 - Wraps errors with `fmt.Errorf("context: %w", err)` for debuggable error chains
@@ -87,13 +87,14 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
 - Consider Server-Side Apply for status updates (`r.Status().Patch()` with `client.Apply`) when multiple actors may contribute to status and field ownership needs to stay explicit. In single-controller cases this can still be a good fit, but treat it as a design choice rather than a universal upgrade over ordinary status patch/update flows
 - Resource is re-fetched before status update to avoid "object has been modified" conflicts
 - When using `retry.RetryOnConflict` for status updates, verify that the retry closure does not wholesale-replace `latest.Status` with an in-memory copy built before the retry. A full replacement silently overwrites status fields set by other actors between the original fetch and the retry. Prefer merging only the fields the controller owns onto the re-fetched object, or use Server-Side Apply status patches which handle field ownership natively. See [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) for a gold-standard implementation of this pattern
+- When using `retry.RetryOnConflict`, `status.observedGeneration` (and condition-level `observedGeneration`) must be set to the generation captured at the start of the reconcile — not to the re-fetched object's `.metadata.generation` inside the retry closure. A re-fetch may return a newer generation if the spec was updated between retries; using that value falsely claims the controller has reconciled a spec it never processed. If the status lacks `observedGeneration` entirely and the controller uses `RetryOnConflict`, flag it as `should` (Major): without this field, consumers cannot determine whether the status reflects the current spec or a stale one, and the retry loop compounds the risk by potentially writing status against a spec version the controller never processed. Classify as `must` (Critical) when combined with wholesale status replacement
 - Uses standard condition types following Kubernetes conventions:
   - `type`: PascalCase (e.g., `Ready`, `Available`, `Degraded`, `Progressing`)
   - `status`: `True`, `False`, or `Unknown`
   - `reason`: one-word CamelCase describing why the condition is set
   - `message`: human-readable details
   - `lastTransitionTime`: updated only when `status` changes
-  - `observedGeneration`: set to `.metadata.generation` to indicate which spec version the condition reflects
+  - `observedGeneration`: set to `.metadata.generation` captured at reconcile entry to indicate which spec version the condition reflects — never from a re-fetched object inside a retry loop
 - Conditions are set on first visit, even with `Unknown` status
 - Uses `meta.SetStatusCondition()` or equivalent for proper condition management
 - OpenShift operators: reports `Available`, `Progressing`, `Degraded` conditions on ClusterOperator
