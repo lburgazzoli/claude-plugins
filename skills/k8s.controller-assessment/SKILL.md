@@ -71,23 +71,27 @@ After sub-skills complete, merge and normalize findings in this exact order:
 4. For each merged finding, keep a `sources` list containing every sub-skill that reported it, using canonical skill identifiers from [validation-output-schema.md](../../references/validation-output-schema.md) (`k8s.controller-architecture`, `k8s.controller-api`, `k8s.controller-production-readiness`).
 5. If two or more sub-skills report the same issue with different severities, keep the higher severity.
 6. Set `primarySource` for every finding using this priority order: `k8s.controller-architecture` > `k8s.controller-api` > `k8s.controller-production-readiness`. For single-source findings, use that source. For multi-source findings, use the source that reported the higher severity; if severities tied, use the priority order.
-7. Run validation on the merged findings and highlights, and apply validation adjustments.
-8. Compute severity counts and scores only after the final merged severities are settled.
+7. Reconcile remaining fields for each merged finding: `title`, `what`, `area`, `why`, `fix`, and `confidence` are taken from the `primarySource` contribution. `where` is the union of all contributing sources' locations, deduplicated. `notVerified` is the union of all contributing sources' entries, deduplicated.
+8. Run validation on the merged findings and highlights, and apply validation adjustments.
+9. Compute severity counts and scores only after the final merged severities are settled.
 
 ## Validation Phase
 
 > This phase **always runs** after merging and deduplication. Its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
 
-Each individual sub-skill now performs its own adversarial self-validation before returning findings. This orchestrator-level validation serves as a **cross-skill consistency check** — deduplicating overlapping findings, resolving conflicting severities across skills, and catching any issues that only become apparent when viewing results holistically.
+Each individual sub-skill performs its own subagent-based adversarial validation before returning findings (see the Leaf Validator Subagent section in each sub-skill). Those leaf validators handle per-finding precision: factual accuracy, behavioral impact, severity calibration, and within-skill highlight consistency.
+
+This orchestrator-level validation serves as a **cross-skill consistency check**. It does not re-validate individual findings or re-apply single-finding downgrade rules — it trusts the leaf validation results as its baseline. Instead, it focuses on issues that only become apparent when viewing merged results from multiple skills holistically.
+
 For the final merged report, this orchestrator-level validation is authoritative.
 
-After findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context. The validator's purpose is to independently verify whether each finding represents a real behavioral issue in the controller.
+After findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context.
 
 ### Validator subagent instructions
 
 Launch a separate subagent with the following brief. Do **not** share the assessment agents' context — the validator must read the code independently to avoid confirmation bias.
 
-> **Role**: You are a skeptical reviewer. Your job is to challenge each finding from a controller assessment and determine whether it actually impacts the controller's runtime behavior, correctness, or operational safety. You also verify that positive highlights do not contradict the findings.
+> **Role**: You are a cross-skill consistency reviewer. Your job is to verify the coherence of a merged controller assessment report that combines findings from multiple sub-skills. Each finding has already been validated for factual accuracy and severity by its leaf skill's validator — you do not repeat that work. Instead, you focus on merge-level concerns.
 >
 > **Inputs you receive**:
 > - The merged findings list (each extending the base finding model from `validation-output-schema.md` with `sources` and `primarySource`)
@@ -96,42 +100,59 @@ Launch a separate subagent with the following brief. Do **not** share the assess
 >
 > **Your task**:
 >
-> **Part 1 — Validate findings:**
-> For each finding, independently read the code at the referenced location and evaluate:
-> 1. **Is the finding accurate?** Does the code actually exhibit the described problem?
-> 2. **Does it affect behavior?** Would fixing this change how the controller behaves at runtime, or is it purely stylistic / cosmetic / theoretical?
-> 3. **Is the severity appropriate?** A code pattern that looks non-ideal but cannot cause incorrect reconciliation, data loss, or operational failure should be downgraded.
+> **Part 1 — Verify deduplication correctness:**
+> Review findings that were merged as duplicates:
+> - Are they truly the same underlying issue, or were distinct problems collapsed?
+> - Are there findings kept as separate that actually describe the same issue from different sub-skills?
+> If deduplication was incorrect, note which findings should be split or merged and why.
 >
-> **Part 2 — Validate highlights against findings:**
-> For each positive highlight, check whether it contradicts any finding:
-> - A highlight must not praise a pattern that is also flagged as a finding. For example: praising "Controller X uses RetryOnConflict" while finding "Controllers Y and Z lack RetryOnConflict" is a contradiction — if the absence of the pattern is a problem, its presence in one place is not a highlight, it is the expected baseline.
-> - If a highlight praises a pattern whose absence is flagged as a finding anywhere in the report, mark the highlight for removal or rewording.
-> - If the same concept is used correctly in some code paths and incorrectly in others, the correct usage is not a highlight — only the incorrect usage should appear (as a finding).
-> - Highlights that do not conflict with any finding should be kept as-is.
+> **Part 2 — Reconcile cross-skill severity:**
+> When multiple sub-skills reported the same issue at different severities:
+> - Is the chosen severity (the higher one per merge rules) appropriate for the merged context?
+> - Does the sub-skill that assigned the higher severity have stronger authority over that issue's domain?
+> If a severity should be adjusted, provide the corrected severity and reasoning.
 >
-> **Downgrade rules** (findings only):
-> - A finding that is factually correct but has **no behavioral impact** (e.g., a minor style deviation, an extra log line, a slightly verbose but functionally correct pattern) → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)
-> - A finding where the described problem **cannot occur** given the surrounding code (e.g., "missing nil check" when the value is guaranteed non-nil by an earlier guard) → dismiss entirely
-> - A finding where the severity is appropriate and the behavioral impact is real → keep as-is
+> **Part 3 — Check cross-skill highlight contradictions:**
+> For each positive highlight, check whether it contradicts a finding from a **different** sub-skill:
+> - A highlight from sub-skill X must not praise a pattern that sub-skill Y flagged as a finding. For example: praising "Controller X uses RetryOnConflict" (from Architecture) while Production Readiness flags "Controllers Y and Z lack RetryOnConflict" is a contradiction — if the absence of the pattern is a problem, its presence in one place is not a highlight, it is the expected baseline.
+> - If a highlight praises a pattern whose absence is flagged as a finding by another sub-skill, mark the highlight for removal or rewording.
+> - Highlights that do not conflict with any finding from any sub-skill should be kept as-is.
+>
+> **Part 4 — Assess narrative coherence:**
+> Review the merged findings and highlights as a whole:
+> - Do any findings contradict each other across sub-skills?
+> - Would the merged report present a confusing or inconsistent picture to the reader?
+> If narrative issues exist, note which findings or highlights need adjustment.
+>
+> **Important**: Do **not** re-check factual accuracy of individual findings or re-apply single-finding downgrade rules (no behavioral impact → downgrade, cannot occur → dismiss). Those checks were already performed by each sub-skill's leaf validator. Treat leaf-validated severities as your baseline.
 >
 > **Output schema**:
 >
-> Finding validations (one entry per finding):
+> Finding validations (one entry per finding that needs adjustment):
 > ```
 > findingId: <id matching the merged findings list>
 > originalSeverity: critical / major / minor
 > validatedSeverity: critical / major / minor / dismissed
-> verdict: confirmed / downgraded / dismissed
-> reason: <1-2 sentences explaining why — reference specific code evidence>
+> verdict: confirmed / adjusted / dismissed
+> reason: <1-2 sentences explaining the cross-skill concern>
 > ```
 >
 > Highlight validations (one entry per highlight that needs adjustment):
 > ```
 > highlightId: <id matching the merged highlights list>
 > verdict: keep / remove / reword
-> reason: <1-2 sentences explaining the contradiction with a specific finding>
+> reason: <1-2 sentences explaining the cross-skill contradiction>
 > suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
 > ```
+>
+> Deduplication corrections (only if deduplication was incorrect):
+> ```
+> action: split / merge
+> findingIds: [<ids of affected findings>]
+> reason: <1-2 sentences explaining why>
+> ```
+>
+> Do **not** produce new findings. Your role is to verify merge consistency, not to review code.
 
 ### Applying validation results
 
@@ -141,15 +162,16 @@ After the validator returns:
 
 1. Update each finding's severity to the `validatedSeverity`.
 2. Remove any finding with `validatedSeverity: dismissed`.
-3. Keep downgrade and dismissal rationale in the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
-4. Recompute severity counts and scores using the validated severities.
-5. If `--details` is active, include a **Validation** section after the Findings section listing all verdict changes (downgrades and dismissals) with reasons.
+3. Apply any deduplication corrections (split or merge findings as directed).
+4. Keep adjustment rationale in the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
+5. Recompute severity counts and scores using the validated severities.
+6. If `--details` is active, include a **Validation** section after the Findings section listing all verdict changes (adjustments and dismissals) with reasons.
 
 **Highlight adjustments:**
 
-6. Remove any highlight with `verdict: remove`.
-7. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
-8. Keep all highlights with `verdict: keep` unchanged.
+7. Remove any highlight with `verdict: remove`.
+8. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
+9. Keep all highlights with `verdict: keep` unchanged.
 
 ### Skipping validation
 

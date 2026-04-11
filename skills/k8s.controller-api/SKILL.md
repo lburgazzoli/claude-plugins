@@ -101,18 +101,79 @@ Use this repeatable workflow:
    - `should` -> `Major`
    - `contextual` -> `Minor`
 6. If generated CRD manifests are unavailable in scope (or `controller-gen` cannot be executed), perform static marker/source review and mark generated-manifest checks as `Not verified` with reduced confidence.
-7. **Adversarial self-validation**: Before producing output, critically review each finding:
-   - **Accuracy**: Does the code actually exhibit the described problem? Re-read the referenced location independently.
-   - **Behavioral impact**: Would fixing this change runtime behavior, correctness, or operational safety — or is it purely stylistic/cosmetic/theoretical?
-   - **Severity check**: A pattern that looks non-ideal but cannot cause incorrect reconciliation, data loss, or operational failure should be downgraded.
-   - Downgrade rules:
-     - Factually correct but **no behavioral impact** → downgrade one level (Critical→Major, Major→Minor, Minor→dismiss)
-     - Described problem **cannot occur** given surrounding code → dismiss entirely
-     - Severity appropriate with real impact → keep as-is
-   - **Consistency check**: Cross-reference findings against positive highlights — a pattern must not appear as both a finding and a positive highlight. If a pattern is flagged as a finding, remove or reword any positive highlight that praises the same or contradictory pattern. If the same concept is used correctly in some code paths and incorrectly in others, do not praise it as a positive — only flag the problematic usage.
-   - Remove dismissed findings and adjust severities before scoring.
-   - Validation **always runs** and its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
-8. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
+7. **Adversarial validation**: Launch a clean-context validator subagent with the draft findings, draft highlights, and scope. See [Leaf Validator Subagent](#leaf-validator-subagent) for the validator brief and isolation rules.
+8. Apply validation results: update severities, remove dismissed findings, adjust or remove highlights per validator verdicts. Validation **always runs** and its results are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
+9. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
+
+## Leaf Validator Subagent
+
+After the primary analysis produces draft findings and draft highlights, launch a **separate subagent** to adversarially validate the results. The validator operates with a clean context — it does not receive the primary reviewer's reasoning or intermediate notes.
+
+### Isolation rules
+
+- Run in a separate subagent
+- Receive only: the scope (from `$ARGUMENTS` or resolved defaults), draft findings, and draft highlights
+- Re-read code independently from the evidence locations in each finding's `where` field
+- Do not rely on the primary reviewer's internal reasoning
+
+### Validator brief
+
+> **Role**: You are a skeptical reviewer. Your job is to challenge each finding from an API conventions assessment and determine whether it actually impacts runtime behavior, correctness, or operational safety. You also verify that positive highlights do not contradict the findings.
+>
+> **Inputs you receive**:
+> - The draft findings list (each following the canonical finding model from `validation-output-schema.md`)
+> - The draft positive highlights list (each with: `id`, `description`)
+> - The scope so you can read the same code
+>
+> **Your task**:
+>
+> **Part 1 — Validate findings:**
+> For each finding, independently read the code at the referenced location and evaluate:
+> 1. **Is the finding accurate?** Does the code actually exhibit the described problem?
+> 2. **Does it affect behavior?** Would fixing this change runtime behavior, correctness, or operational safety — or is it purely stylistic / cosmetic / theoretical?
+> 3. **Is the severity appropriate?** A pattern that looks non-ideal but cannot cause incorrect behavior, data loss, or operational failure should be downgraded.
+>
+> **Part 2 — Validate highlights against findings:**
+> For each positive highlight, check whether it contradicts any finding:
+> - A highlight must not praise a pattern that is also flagged as a finding.
+> - If a highlight praises a pattern whose absence is flagged as a finding anywhere in the report, mark the highlight for removal or rewording.
+> - If the same concept is used correctly in some code paths and incorrectly in others, the correct usage is not a highlight — only the incorrect usage should appear (as a finding).
+> - Highlights that do not conflict with any finding should be kept as-is.
+>
+> **Downgrade rules** (findings only):
+> - A finding that is factually correct but has **no behavioral impact** → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)
+> - A finding where the described problem **cannot occur** given the surrounding code → dismiss entirely
+> - A finding where the severity is appropriate and the behavioral impact is real → keep as-is
+>
+> **Output schema**:
+>
+> Finding validations (one entry per finding):
+> ```
+> findingId: <id matching the draft findings list>
+> originalSeverity: critical / major / minor
+> validatedSeverity: critical / major / minor / dismissed
+> verdict: confirmed / downgraded / dismissed
+> reason: <1-2 sentences explaining why — reference specific code evidence>
+> ```
+>
+> Highlight validations (one entry per highlight that needs adjustment):
+> ```
+> highlightId: <id matching the draft highlights list>
+> verdict: keep / remove / reword
+> reason: <1-2 sentences explaining the contradiction with a specific finding>
+> suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
+> ```
+>
+> Do **not** produce new findings. Your role is to validate, not to review.
+
+### Applying validation results
+
+1. Update each finding's severity to the `validatedSeverity`.
+2. Remove any finding with `validatedSeverity: dismissed`.
+3. Remove any highlight with `verdict: remove`.
+4. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
+5. Keep downgrade and dismissal rationale for the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
+6. Recompute severity counts using the validated severities.
 
 ## Scoring
 

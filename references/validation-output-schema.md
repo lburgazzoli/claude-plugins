@@ -116,12 +116,23 @@ Use these fields when a validator confirms, downgrades, or dismisses findings:
 - `validatedSeverity`
 - `verdict`
 - `reason`
+- `validationLayer` (optional)
 
 Recommended values:
 
 - `originalSeverity`: `critical`, `major`, `minor`
 - `validatedSeverity`: `critical`, `major`, `minor`, `dismissed`
-- `verdict`: `confirmed`, `downgraded`, `dismissed`
+- `verdict`: `confirmed`, `downgraded`, `adjusted`, `dismissed`
+- `validationLayer`: `leaf`, `orchestrator`
+
+### Validation Layers
+
+Validation operates in two complementary layers. The authoritative rules for each layer live in the individual skill files; this section provides a brief summary for schema consumers.
+
+- **`leaf`**: Per-finding precision. Each leaf skill launches a clean-context validator subagent that re-reads code independently and checks factual accuracy, behavioral impact, severity calibration, and within-skill highlight consistency. Leaf validators do not produce new findings. Leaf verdicts use `confirmed`, `downgraded`, or `dismissed`.
+- **`orchestrator`**: Cross-skill consistency. The orchestrator launches a validator subagent after merging findings from multiple sub-skills. It checks deduplication correctness, cross-skill severity reconciliation, cross-skill highlight contradictions, and narrative coherence. It does not re-apply single-finding downgrade rules — it trusts the leaf validation results as its baseline. Orchestrator verdicts use `confirmed`, `adjusted`, or `dismissed`.
+
+When `--details` is active, `validationLayer` lets the report distinguish which layer produced each validation entry. For leaf-only reports (running a single sub-skill directly), all validation entries are `leaf`. For merged reports (via the orchestrator), entries may be either `leaf` or `orchestrator`.
 
 ### Highlight Validation
 
