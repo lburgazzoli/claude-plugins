@@ -106,3 +106,4 @@ hooks/**/*.a
 .tmp/
 !.claude/
 .claude/settings.local.json
+.cursor/
