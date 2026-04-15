@@ -103,3 +103,6 @@ hooks/**/*.a
 # Claude Code local state (if any)
 .claude-local/
 .claude-cache/
+.tmp/
+!.claude/
+.claude/settings.local.json
