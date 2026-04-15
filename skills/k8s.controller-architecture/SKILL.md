@@ -46,16 +46,21 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
 
 - Distinguishes between recoverable (transient) and non-recoverable (permanent) errors
 - Transient errors (API server unavailable, conflict) return error to trigger exponential backoff requeue
+- For permanent or non-recoverable errors, use `reconcile.TerminalError(err)` to signal that the request should not be requeued. This is the canonical way to stop retries for errors that will never succeed (e.g., invalid spec that requires user intervention). Complement this by surfacing the problem in status conditions so users can observe and act on it
 - For user-fixable or long-lived spec issues (for example, invalid spec or missing referenced resources), prefer surfacing the problem in status conditions and avoid hot-looping on repeated errors. Returning an error can still be appropriate when it materially improves retry behavior or observability
 - Uses `ctrl.Result{RequeueAfter: duration}` for time-based scheduling instead of polling loops
 - Uses `ctrl.Result{}` with nil error for graceful stop (no unnecessary requeue)
-- Do not use `Requeue: true` as a substitute for returning an error — return errors directly for failures (controller-runtime handles requeue with backoff automatically); reserve `Requeue: true` for in-progress operations that need default backoff without an error
+- `Requeue: true` is deprecated since controller-runtime v0.20 (PR #3107). It misuses the error-retry rate limiter for a non-error purpose. Return errors directly for failures, or use `RequeueAfter` with an explicit duration for in-progress polling. If found in existing code, flag as informational — it still works but should be migrated
 - Conflict handling is contextual. Many controller-runtime reconcilers correctly handle optimistic concurrency by returning patch or update errors and relying on the next reconcile to re-fetch fresh state. **This is the default valid pattern** — do not flag the absence of `RetryOnConflict` as a finding when the controller propagates conflict errors normally
 - Treat `retry.RetryOnConflict` (`k8s.io/client-go/util/retry`) as an exception pattern, not a default. Prefer returning the conflict error and letting the next reconcile start from fresh state
 - Use `retry.RetryOnConflict` only when strictly needed for a narrowly bounded read-modify-write section where immediate local retry is materially better than reconcile-level retry
 - Define "strictly needed" as: a narrow, side-effect-free read-modify-write section where immediate local retry materially reduces risk or churn compared with exiting reconcile and requeueing
-- Example strict-need case: a small status-only merge that must preserve controller-owned fields and can safely retry after a fresh re-fetch, without re-running broader reconcile logic
+- Example strict-need cases from upstream projects:
+  - finalizer removal during concurrent deletion races where multiple controllers contend on the same object (cluster-api)
+  - ConfigMap updates in remote clusters where reconcile-level retry would re-run expensive cross-cluster operations (cluster-api kubeadm)
+  - narrow resource updates where expensive preceding computation (e.g., metrics collection in HPA) should not be re-run for a cheap write
 - Non-example: wrapping broad reconcile flow (especially with external calls, child resource creation, or multi-step mutations) in `RetryOnConflict`; in those cases, return the conflict error and let the next reconcile start from fresh state
+- Non-example: status subresource updates — no major upstream project uses `RetryOnConflict` for status updates; they rely on the reconcile loop or batched patch patterns instead
 - When in doubt, do not use `RetryOnConflict`
 - Whenever `retry.RetryOnConflict` is used, require all safeguards:
   - re-fetch inside the retry closure before mutation
@@ -63,11 +68,11 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
   - avoid side effects inside the retry loop
   - avoid decisions from stale assumptions across retries
   - preserve reconcile-entry generation semantics for `observedGeneration` (see Area 5)
-- Use [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) as a reference: its status update helpers re-fetch inside the retry closure and merge only the fields the controller owns rather than replacing the entire status struct
+- If `RetryOnConflict` is used despite the above guidance, verify the safeguards above are met. [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) is one reference for how to structure retry closures that re-fetch and merge only owned fields. However, note that even well-structured projects are moving away from this pattern in favor of reconcile-loop retry or SSA
 - Never praise `RetryOnConflict` as a positive highlight — at best it is a neutral implementation choice that requires scrutiny
 - Review whether the controller's chosen pattern is coherent with its write style:
   - controllers that accumulate changes in memory and write them back with a single patch near the end of reconcile often return the conflict error and let the next reconcile fetch fresh state instead of retrying inline (for example, the common Cluster API-style deferred patch pattern)
-  - SSA-based writes may encounter field-manager conflicts instead of classic update conflicts
+  - SSA-based writes with `force: true` (recommended for controllers) effectively eliminate classic `resourceVersion` conflicts by transforming them into meaningful field-ownership conflicts. This removes the primary motivation for `RetryOnConflict` in status updates. SSA-based status patches (`r.Status().Patch()` with `client.Apply`) handle field ownership natively and do not need retry wrappers
   - explicit `RetryOnConflict` loops should be rare and must satisfy the strict-use and safeguard rules above
 - Classify this area as `contextual` (Minor) unless there is evidence of lost updates, stale-state decisions, or hot-looping
 - Never silently swallows errors — either returns them, logs them, or records them in status
@@ -100,8 +105,8 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
 - Consider Server-Side Apply for status updates (`r.Status().Patch()` with `client.Apply`) when multiple actors may contribute to status and field ownership needs to stay explicit. In single-controller cases this can still be a good fit, but treat it as a design choice rather than a universal upgrade over ordinary status patch/update flows
 - Resource is re-fetched before status update to avoid "object has been modified" conflicts
 - `status.observedGeneration` should be set to `.metadata.generation` captured at the start of the reconcile to indicate which spec version the status reflects. Without this field, consumers cannot determine whether the status is current or stale. The same rule applies to condition-level `observedGeneration`
-- For status updates, apply the same default: use `retry.RetryOnConflict` only when strict necessity is demonstrated; when in doubt, return the conflict and reconcile again from fresh state
-- When using `retry.RetryOnConflict` for status updates, first verify strict necessity (prefer returning conflicts and reconciling with fresh state). If used, verify that the retry closure does not wholesale-replace `latest.Status` with an in-memory copy built before the retry. A full replacement silently overwrites status fields set by other actors between the original fetch and the retry. Prefer merging only the fields the controller owns onto the re-fetched object, or use Server-Side Apply status patches which handle field ownership natively. See [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) for a gold-standard implementation of this pattern
+- For status updates, do not use `retry.RetryOnConflict`. No major upstream project uses it for status subresource updates. The validated patterns are: (1) return the conflict error and let the next reconcile re-fetch fresh state, (2) use a batched deferred-patch approach (e.g., Cluster API's `PatchHelper`), or (3) use SSA status patches which handle field ownership natively
+- If `RetryOnConflict` is found around status updates in existing code, verify that the retry closure does not wholesale-replace `latest.Status` with an in-memory copy built before the retry — a full replacement silently overwrites status fields set by other actors between the original fetch and the retry. Recommend migrating to one of the validated patterns above
 - When using `retry.RetryOnConflict`, `status.observedGeneration` (and condition-level `observedGeneration`) must be set to the generation captured at the start of the reconcile — not to the re-fetched object's `.metadata.generation` inside the retry closure. A re-fetch may return a newer generation if the spec was updated between retries; using that value falsely claims the controller has reconciled a spec it never processed. If the status lacks `observedGeneration` entirely and the controller uses `RetryOnConflict`, flag it as `should` (Major): without this field, consumers cannot determine whether the status reflects the current spec or a stale one, and the retry loop compounds the risk by potentially writing status against a spec version the controller never processed. Classify as `must` (Critical) when combined with wholesale status replacement
 - Uses standard condition types following Kubernetes conventions:
   - `type`: PascalCase (e.g., `Ready`, `Available`, `Degraded`, `Progressing`)
@@ -184,6 +189,13 @@ Treat this area as contextual by default; escalate when unguarded vendor API usa
   - `should` (Major): vendor API usage is not isolated or documented, making portability difficult without code changes
   - `contextual` (Minor): vendor API usage is intentional and documented but could benefit from better isolation or graceful degradation
 
+## Anti-Findings (Do Not Flag)
+
+The following patterns are explicitly **not findings** and must not appear in the report. Any draft finding whose sole basis matches one of these must be dismissed before validation.
+
+- **Absence of `RetryOnConflict`**: Returning conflict errors and relying on the reconcile loop is the preferred default pattern. Only flag conflict handling when there is evidence of silent data loss, swallowed conflict errors, or writes on knowingly stale objects without returning the error. A finding that says "does not use RetryOnConflict" or "no controller uses RetryOnConflict" without such evidence must be dismissed.
+- **`RetryOnConflict` as a positive highlight**: At best it is a neutral implementation choice that requires scrutiny, never a strength.
+
 ## Assessment Procedure
 
 Use this repeatable workflow:
@@ -211,7 +223,7 @@ Categorize checks into these groups before deep analysis:
 Execution model:
 
 1. Launch one subagent per category and run the two category checks in parallel.
-2. Give each subagent explicit scope, expected evidence format (file path plus line references), and severity expectations.
+2. Give each subagent explicit scope, expected evidence format (file path plus line references), and severity expectations. Category A subagent **must not** produce findings for the mere absence of `RetryOnConflict` — verify that conflict errors are swallowed or cause silent data loss before considering any conflict-handling finding (see [Anti-Findings](#anti-findings-do-not-flag)).
 3. Require each subagent to return findings using this schema:
    - `id`, `title`, `area`, `severity`, `what`, `where`, `why`, `fix`, `confidence`, `notVerified`
    - `where` should use repo-relative GitHub-style location string(s), especially for each `Critical` or `Major` finding
@@ -255,6 +267,9 @@ After merging Category A and B results, launch a **separate subagent** to advers
 > - If a highlight praises a pattern whose absence is flagged as a finding anywhere in the report, mark the highlight for removal or rewording.
 > - If the same concept is used correctly in some code paths and incorrectly in others, the correct usage is not a highlight — only the incorrect usage should appear (as a finding).
 > - Highlights that do not conflict with any finding should be kept as-is.
+>
+> **Known false positives — dismiss immediately:**
+> - Any finding whose sole basis is the absence of `RetryOnConflict`. The skill defines returning conflict errors and relying on the requeue loop as the **default valid pattern**. Only flag conflict handling when there is evidence of silent data loss, swallowed conflict errors, or writes on knowingly stale objects without returning the error. Dismiss any finding that says "does not use RetryOnConflict" without such evidence.
 >
 > **Downgrade rules** (findings only):
 > - A finding that is factually correct but has **no behavioral impact** → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)
