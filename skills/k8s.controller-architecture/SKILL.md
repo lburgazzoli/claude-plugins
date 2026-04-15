@@ -40,7 +40,7 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
 - Labels and annotations must not be blindly propagated from parent resources to child templates (e.g., from a CR to a Deployment's `spec.template.metadata`), as any change to the parent's labels would trigger a rolling restart of the underlying pods. If label/annotation propagation is intentional, it should use an explicit opt-in allowlist of keys to propagate, not copy-all with an opt-out denylist
 - Handles resource-not-found gracefully (deleted between queue and reconciliation)
 - Uses `apierrors.IsNotFound()` to detect deleted resources and returns nil to stop reconciliation
-- Properly handles optimistic concurrency via `resourceVersion` conflicts. Two approaches are equally valid: (a) return the conflict error and let controller-runtime requeue with backoff (the next reconcile fetches fresh state), or (b) use `retry.RetryOnConflict` for bounded inline retries. The absence of `RetryOnConflict` is **not** a finding when the controller returns errors normally — the requeue loop inherently resolves conflicts. Only flag conflict handling when there is evidence of **silent data loss**, **swallowed conflict errors**, or **writes on knowingly stale objects without returning the error**
+- Properly handles optimistic concurrency via `resourceVersion` conflicts. Prefer returning the conflict error and letting controller-runtime requeue with backoff so the next reconcile starts from fresh state. Use `retry.RetryOnConflict` only when strictly needed for a narrowly bounded inline retry section. The absence of `RetryOnConflict` is **not** a finding when the controller returns errors normally — the requeue loop inherently resolves conflicts. Only flag conflict handling when there is evidence of **silent data loss**, **swallowed conflict errors**, or **writes on knowingly stale objects without returning the error**
 
 ### 2. Error Handling and Requeue Strategy
 
@@ -51,11 +51,24 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
 - Uses `ctrl.Result{}` with nil error for graceful stop (no unnecessary requeue)
 - Do not use `Requeue: true` as a substitute for returning an error — return errors directly for failures (controller-runtime handles requeue with backoff automatically); reserve `Requeue: true` for in-progress operations that need default backoff without an error
 - Conflict handling is contextual. Many controller-runtime reconcilers correctly handle optimistic concurrency by returning patch or update errors and relying on the next reconcile to re-fetch fresh state. **This is the default valid pattern** — do not flag the absence of `RetryOnConflict` as a finding when the controller propagates conflict errors normally
-- **Every use of `retry.RetryOnConflict`** (`k8s.io/client-go/util/retry`) **must be flagged for review** — at minimum as `contextual` (Minor). It can be appropriate for bounded read-modify-write sections, but it is a risk-carrying pattern that can mask wholesale state replacement silently overwriting concurrent changes (see Area 5), overly broad retry scopes that re-execute side effects, or retry loops that make decisions from partially stale state. When `RetryOnConflict` is present, verify the retry closure re-fetches state and merges only owned fields; escalate to `should` (Major) if it does wholesale replacement or uses stale data. Use [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) as a reference: its status update helpers re-fetch inside the retry closure and merge only the fields the controller owns rather than replacing the entire status struct. **Never praise `RetryOnConflict` as a positive highlight** — at best it is a neutral implementation choice that requires scrutiny
+- Treat `retry.RetryOnConflict` (`k8s.io/client-go/util/retry`) as an exception pattern, not a default. Prefer returning the conflict error and letting the next reconcile start from fresh state
+- Use `retry.RetryOnConflict` only when strictly needed for a narrowly bounded read-modify-write section where immediate local retry is materially better than reconcile-level retry
+- Define "strictly needed" as: a narrow, side-effect-free read-modify-write section where immediate local retry materially reduces risk or churn compared with exiting reconcile and requeueing
+- Example strict-need case: a small status-only merge that must preserve controller-owned fields and can safely retry after a fresh re-fetch, without re-running broader reconcile logic
+- Non-example: wrapping broad reconcile flow (especially with external calls, child resource creation, or multi-step mutations) in `RetryOnConflict`; in those cases, return the conflict error and let the next reconcile start from fresh state
+- When in doubt, do not use `RetryOnConflict`
+- Whenever `retry.RetryOnConflict` is used, require all safeguards:
+  - re-fetch inside the retry closure before mutation
+  - merge only controller-owned fields (never wholesale replacement)
+  - avoid side effects inside the retry loop
+  - avoid decisions from stale assumptions across retries
+  - preserve reconcile-entry generation semantics for `observedGeneration` (see Area 5)
+- Use [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) as a reference: its status update helpers re-fetch inside the retry closure and merge only the fields the controller owns rather than replacing the entire status struct
+- Never praise `RetryOnConflict` as a positive highlight — at best it is a neutral implementation choice that requires scrutiny
 - Review whether the controller's chosen pattern is coherent with its write style:
   - controllers that accumulate changes in memory and write them back with a single patch near the end of reconcile often return the conflict error and let the next reconcile fetch fresh state instead of retrying inline (for example, the common Cluster API-style deferred patch pattern)
   - SSA-based writes may encounter field-manager conflicts instead of classic update conflicts
-  - explicit `RetryOnConflict` loops should re-read state correctly and avoid making decisions from stale assumptions — in particular, `observedGeneration` must be set from the generation captured at reconcile entry, not from the re-fetched object's `.metadata.generation` inside the retry closure (see Area 5)
+  - explicit `RetryOnConflict` loops should be rare and must satisfy the strict-use and safeguard rules above
 - Classify this area as `contextual` (Minor) unless there is evidence of lost updates, stale-state decisions, or hot-looping
 - Never silently swallows errors — either returns them, logs them, or records them in status
 - Wraps errors with `fmt.Errorf("context: %w", err)` for debuggable error chains
@@ -87,7 +100,8 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
 - Consider Server-Side Apply for status updates (`r.Status().Patch()` with `client.Apply`) when multiple actors may contribute to status and field ownership needs to stay explicit. In single-controller cases this can still be a good fit, but treat it as a design choice rather than a universal upgrade over ordinary status patch/update flows
 - Resource is re-fetched before status update to avoid "object has been modified" conflicts
 - `status.observedGeneration` should be set to `.metadata.generation` captured at the start of the reconcile to indicate which spec version the status reflects. Without this field, consumers cannot determine whether the status is current or stale. The same rule applies to condition-level `observedGeneration`
-- When using `retry.RetryOnConflict` for status updates, verify that the retry closure does not wholesale-replace `latest.Status` with an in-memory copy built before the retry. A full replacement silently overwrites status fields set by other actors between the original fetch and the retry. Prefer merging only the fields the controller owns onto the re-fetched object, or use Server-Side Apply status patches which handle field ownership natively. See [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) for a gold-standard implementation of this pattern
+- For status updates, apply the same default: use `retry.RetryOnConflict` only when strict necessity is demonstrated; when in doubt, return the conflict and reconcile again from fresh state
+- When using `retry.RetryOnConflict` for status updates, first verify strict necessity (prefer returning conflicts and reconciling with fresh state). If used, verify that the retry closure does not wholesale-replace `latest.Status` with an in-memory copy built before the retry. A full replacement silently overwrites status fields set by other actors between the original fetch and the retry. Prefer merging only the fields the controller owns onto the re-fetched object, or use Server-Side Apply status patches which handle field ownership natively. See [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) for a gold-standard implementation of this pattern
 - When using `retry.RetryOnConflict`, `status.observedGeneration` (and condition-level `observedGeneration`) must be set to the generation captured at the start of the reconcile — not to the re-fetched object's `.metadata.generation` inside the retry closure. A re-fetch may return a newer generation if the spec was updated between retries; using that value falsely claims the controller has reconciled a spec it never processed. If the status lacks `observedGeneration` entirely and the controller uses `RetryOnConflict`, flag it as `should` (Major): without this field, consumers cannot determine whether the status reflects the current spec or a stale one, and the retry loop compounds the risk by potentially writing status against a spec version the controller never processed. Classify as `must` (Critical) when combined with wholesale status replacement
 - Uses standard condition types following Kubernetes conventions:
   - `type`: PascalCase (e.g., `Ready`, `Available`, `Degraded`, `Progressing`)
@@ -151,6 +165,25 @@ Area 7 covers performance-oriented cache tuning (scoping, predicates, rate limit
 - When access is needed, prefer direct (uncached) client reads or scope the cache to specific namespaces/labels
 - If caching is unavoidable, restrict it via `cache.Options.ByObject` with label or field selectors
 
+### 9. Portability and Vendor API Dependencies
+
+Treat this area as contextual by default; escalate when unguarded vendor API usage causes runtime failures on vanilla Kubernetes.
+
+- Identify imports and usage of vendor-specific API groups (e.g., `openshift.io`, `route.openshift.io`, `security.openshift.io`, `config.openshift.io`, `rancher.cattle.io`, `run.tanzu.vmware.com`) and flag them as distribution-specific dependencies
+- Check whether vendor-specific API usage is guarded by runtime discovery — for example, using the discovery client (`discovery.ServerResourcesForGroupVersion()`) or checking API group availability before registering watches or reconciling vendor resources. Unguarded usage causes the controller to crash or fail to start on clusters that do not have those APIs installed
+- When vendor APIs are used, check whether the controller gracefully degrades (skips vendor-specific logic, logs a warning) when the API is unavailable, or whether it hard-fails
+- Flag vendor-specific resource types used where a portable Kubernetes-native equivalent exists and the vendor type is not strictly required:
+  - `Route` (OpenShift) vs `Ingress` or Gateway API
+  - `DeploymentConfig` (OpenShift, deprecated) vs `Deployment`
+  - `SecurityContextConstraints` (OpenShift) vs `PodSecurityStandards` / `PodSecurity` admission
+- Check whether vendor-specific logic is isolated into separate packages or files, making it possible to build and run the controller without the vendor dependency. Mixing vendor-specific and portable logic in the same reconciler makes the controller harder to port
+- Distinguish between build-time coupling (importing vendor types — the binary links against vendor libraries) and runtime coupling (discovering vendor APIs dynamically). Runtime discovery is preferred when the vendor integration is optional
+- If the controller is explicitly designed for a single vendor platform (e.g., an OpenShift-only operator that manages `ClusterOperator` conditions), vendor API usage is expected — flag it as informational rather than a finding, but still verify that the vendor requirement is documented
+- Severity guidance:
+  - `must` (Critical): vendor API used without any availability guard, causing hard crash or startup failure on vanilla Kubernetes
+  - `should` (Major): vendor API usage is not isolated or documented, making portability difficult without code changes
+  - `contextual` (Minor): vendor API usage is intentional and documented but could benefit from better isolation or graceful degradation
+
 ## Assessment Procedure
 
 Use this repeatable workflow:
@@ -172,7 +205,7 @@ Use this repeatable workflow:
 
 Categorize checks into these groups before deep analysis:
 
-- **Category A - Correctness, lifecycle, RBAC, and security:** Areas 1, 2, 4, 5, 6
+- **Category A - Correctness, lifecycle, RBAC, security, and portability:** Areas 1, 2, 4, 5, 6, 9
 - **Category B - Performance and cache behavior:** Areas 3, 7, 8
 
 Execution model:
@@ -265,7 +298,7 @@ After merging Category A and B results, launch a **separate subagent** to advers
 
 Use this weighting to keep assessments consistent:
 
-- **Category A** — Correctness, data safety, RBAC, and security (Areas 1, 2, 4, 5, 6): **60%**
+- **Category A** — Correctness, data safety, RBAC, security, and portability (Areas 1, 2, 4, 5, 6, 9): **60%**
 - **Category B** — Performance and scalability (Areas 3, 7, 8): **40%**
 
 Scoring procedure:
@@ -308,7 +341,7 @@ Score table:
 | Metric | Value |
 |--------|-------|
 | **Score** | 0-100 (or `Not applicable`) |
-| **Category A** (Correctness, RBAC, Security) | 0-100 |
+| **Category A** (Correctness, RBAC, Security, Portability) | 0-100 |
 | **Category B** (Performance, Scalability) | 0-100 |
 | **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
 
