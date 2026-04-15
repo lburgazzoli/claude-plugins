@@ -41,7 +41,7 @@ Consult [validation-output-schema.md](../../references/validation-output-schema.
   - Lists of named subobjects preferred over maps of subobjects
   - All optional fields have `+optional` marker and `omitempty` JSON tag
   - Required fields are validated with kubebuilder markers (`+kubebuilder:validation:Required`)
-- Printer columns (`+kubebuilder:printcolumn`) show useful summary info in `kubectl get`
+- Printer columns (`+kubebuilder:printcolumn`) show useful summary info in `kubectl get`. Treat missing printer columns as `contextual` (recommendation), not `should`
 
 ### 2. API Versioning
 
