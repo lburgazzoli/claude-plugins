@@ -1,233 +1,261 @@
 ---
 name: k8s.controller-production-readiness
-description: Evaluate a Kubernetes controller's production readiness by reviewing test coverage, observability (events, logs, metrics), and operational maturity.
+description: Evaluate a Kubernetes controller's production readiness by reviewing test coverage, observability, and deployment hardening.
 ---
 
 # Kubernetes Controller Production Readiness Assessment
 
-Evaluate a Kubernetes controller's production readiness focusing on test coverage and observability.
-This skill is primarily designed for Go controllers built with `controller-runtime`/kubebuilder patterns.
-
-## Inputs
-
-- If `$ARGUMENTS` is provided, treat it as scope (files, package, controller name, assessment focus, or GitHub repository).
-- GitHub repository inputs may be full URLs (for example, `https://github.com/org/repo`) or shorthand (`org/repo`).
-- If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source and do not apply local `git diff` defaults.
-- If no arguments are provided, assess current repository changes from git diff.
-- If there are no changes, start with controller packages and test directories first; expand to the full codebase only when needed for evidence.
-- If the project has no controller/operator implementation assets in scope (for example, no controller reconciler code, no relevant tests, and no operator deployment/runtime manifests), skip this skill and report `Not applicable`.
-- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
-
-## Input Validation
-
-The only recognized flag is `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
-When this skill is invoked by `/k8s.controller-assessment`, it should receive only scope text and optional `--details` (orchestration flags such as `--scope` are not valid here).
+Evaluate a Kubernetes controller's production readiness focusing on test coverage, observability, and operational hardening.
+This skill is primarily designed for Go controllers built with `controller-runtime` and kubebuilder patterns.
 
 ## References
 
-Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritative source of conventions and high-quality reference implementations.
-Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical finding, evidence, highlight, and validation model used by validation-style skills.
+Consult [k8s-upstream.md](../../references/k8s-upstream.md) for upstream conventions.
+Consult [analyzer-output-schema.md](../../references/analyzer-output-schema.md) for the analyzer JSON input contract.
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report model.
+Consult [reproducible-assessments.md](../../references/reproducible-assessments.md) for deterministic execution rules.
+
+## Inputs
+
+- `$ARGUMENTS` may contain:
+  - scope text such as files, packages, controller names, or GitHub repositories
+  - `--mode=deterministic`
+  - `--mode=exploratory`
+- Default mode is `--mode=deterministic`.
+- If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source.
+- If no controller implementation assets, relevant tests, or deployment manifests are found in the resolved scope, return `Not applicable`.
+
+## Input Validation
+
+- The only recognized flags are `--mode=deterministic` and `--mode=exploratory`.
+- If `$ARGUMENTS` contains any other `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+
+## Static Analyzer
+
+In deterministic mode, build and run the static analyzer to extract structured facts from Go code, YAML manifests, and test file discovery. This is the single evidence source.
+
+Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads.
+
+### Run
+
+```bash
+<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --skill production-readiness --format json
+```
+
+If the orchestrator (`k8s.controller-assessment`) has already run the analyzer and the JSON is loaded in context, skip the run step.
+
+### Load and use
+
+Load the full JSON output into context. The output includes:
+
+- A `manifest` section with `count`, `hash` (MANIFEST_HASH), and categorized file `entries` — include `manifest.hash` verbatim in the report for auditability
+- A `facts` array with all extracted evidence
+
+If `manifest.count` is 0, return `Not applicable`.
+
+The analyzer provides facts relevant to this skill:
+
+- `import_analysis` — unstructured logging calls, metrics package detection
+- `controller` — event recorder usages
+- `deployment_manifest` — Deployment/StatefulSet YAML: resource requests/limits, security context, health probes
+- `networkpolicy_manifest` — NetworkPolicy YAML: presence and policy types
+- `test_discovery` — discovered _test.go files and count
+
+### Fact-to-checklist mapping
+
+| Analyzer Facts | Checklist Items |
+|----------------|-----------------|
+| `test_discovery` | 1a-c (Test coverage) |
+| `import_analysis.unstructured_logging` | 2a (Structured logging) |
+| `controller.event_usages` | 2b (Event usage) |
+| `import_analysis.has_metrics` | 2c (Metrics coverage) |
+| `deployment_manifest.containers[].requests/limits` | 3a (Resource requests/limits) |
+| `deployment_manifest.security_context` + `containers[].security_context` | 3b (Security context) |
+| `deployment_manifest.containers[].has_liveness/has_readiness` | 3c (Health probes) |
+| `networkpolicy_manifest` | 3d (Network policy) |
+
+## gopls Verification Protocol
+
+Use gopls MCP tools to verify the static analyzer's findings. These steps are **mandatory** in deterministic mode.
+
+### Logging verification (checklist 2a)
+
+If `import_analysis` facts show `unstructured_logging` calls:
+
+1. Call `go_file_context` on the flagged file to confirm the call is in production code (not a CLI tool, test helper, or behind a build tag)
+
+### Event verification (checklist 2b)
+
+If controller facts show `event_usages`:
+
+1. Use `go_file_context` on the controller file to understand the event call site context
+2. Check whether events are inside conditional blocks (state transitions) or unconditional paths (every reconcile)
 
 ## Assessment Areas
 
+Use area names exactly as written in the section headings below.
+
 ### 1. Test Coverage
 
-- Unit tests for reconciliation logic covering:
-  - Happy path (resource created, updated, deleted)
-  - Error paths (API errors, missing dependencies, invalid spec)
-  - Idempotency (running reconcile twice produces same result)
-  - Finalizer flow (add, cleanup, remove)
-  - Status condition transitions
-- Integration tests using envtest for realistic API server interaction
-- Tests use `gomega` matchers with `Eventually`/`Consistently` for async assertions
-- No flaky tests relying on timing or sleep
-- Edge cases: concurrent modifications, rapid creation/deletion, large resource counts
+- **1a. Reconcile logic has unit or table-driven tests**
+  - title: "Reconcile logic lacks unit or table-driven tests"
+  - finding: no unit or table-driven tests exist for reconcile happy path, error path, idempotency, finalizers, or status transitions (`Major`)
+  - pass: reconcile logic has unit or table-driven tests covering happy path, error path, and at least one of idempotency, finalizers, or status transitions
+  - not-observed: no reconcile logic in scope
 
-### 2. Observability (Events, Logs, Metrics)
+- **1b. Integration test coverage is present**
+  - title: "No integration test coverage for controller-runtime patterns"
+  - finding: no integration tests (e.g., `envtest`) exist when the project uses controller-runtime patterns extensively (`Major`)
+  - pass: integration test coverage is present, OR the project does not use controller-runtime patterns extensively enough to warrant it
+  - not-observed: no controller-runtime usage in scope
 
-**Events:**
-- Event recording is not strictly mandatory — do not flag its absence as a hard requirement, as excessive events become noisy
-- Spot cases where events would aid debugging: significant decisions, state transitions, and error conditions are better surfaced as events than buried in logs, since events are visible via `kubectl describe`
-- When events are used: `Normal` type for successful operations, `Warning` for failures; reasons are CamelCase, messages are human-readable
-- Does not emit events on every reconciliation (only meaningful transitions)
+- **1c. No sleep-based or timing-fragile tests**
+  - title: "Sleep-based or timing-fragile tests"
+  - finding: tests use fixed sleeps or timing-dependent assertions (`Minor`; escalate to `Major` when these tests are clearly relied upon for correctness validation)
+  - pass: tests use polling, Eventually/Consistently, or other non-timing-dependent patterns
+  - not-observed: no tests in scope
 
-**Logging:**
-- Uses structured logging (`log.FromContext(ctx)` from controller-runtime, or `klog.InfoS`/`klog.ErrorS`)
-- No unstructured logging (`klog.Infof`, `fmt.Printf`, `log.Printf`)
-- Key names use lowerCamelCase (`podName`, `namespace`, not `pod_name`)
-- Prefer consistent message style within the project (concise and stable wording) to reduce log noise and improve searchability — do not flag capitalization or wording choices that are internally consistent
-- Uses `klog.KObj()` / `klog.KRef()` for Kubernetes object references in log values
-- Appropriate verbosity levels:
-  - V(0): Critical errors, startup info
-  - V(1): Configuration, expected repeated errors
-  - V(2): Default operational level — state changes, reconciliation events
-  - V(4): Debug-level detail
-- Libraries that log-and-return-error or log internally instead of returning errors are a code smell — flag as a warning, not a hard rule, since some cases (e.g., logging additional context before returning) may be intentional
+### 2. Observability
 
-**Metrics:**
-- Exposes custom metrics for controller-specific business logic if applicable
-- Uses prometheus client conventions (snake_case metric names, proper label cardinality)
-- Includes reconciliation duration and error rate metrics where appropriate
+- **2a. Logs are structured**
+  - title: "Unstructured logging"
+  - finding: controller uses `fmt.Printf`, `log.Println`, or other unstructured logging instead of controller-runtime or `klog` structured APIs (`Major`)
+  - pass: all logging uses structured APIs (controller-runtime logger, `klog`, or equivalent)
+  - not-observed: no logging calls in scope
+
+- **2b. Events are meaningful and not excessive**
+  - title: "Events emitted on every reconcile"
+  - finding: events are emitted on every reconcile iteration regardless of state changes (`Minor`)
+  - pass: events are emitted only on meaningful state transitions, or no events are used
+  - not-observed: no event recorder usage in scope
+
+- **2c. Metrics cover reconcile or business-critical behavior**
+  - title: "No reconcile or business-critical metrics"
+  - finding: no custom metrics cover reconcile duration or business-critical controller behavior (`Minor`; escalate to `Major` when the controller clearly manages externally visible workflows)
+  - pass: metrics cover reconcile duration or business-critical behavior
+  - not-observed: no metrics registration in scope
 
 ### 3. Deployment Hardening
 
-Recommend policy or lint tooling such as [kube-linter](https://github.com/stackrox/kube-linter) when the project ships deployment manifests. Treat the following checks as operational-readiness and deployment-hardening signals; severity should depend on the target environment and delivery model rather than being treated as direct proof of controller correctness
+- **3a. Manager manifests define resource requests and limits**
+  - title: "Manager manifest missing resource requests or limits"
+  - finding: the manager deployment manifest omits resource requests or limits (`Major`)
+  - pass: resource requests and limits are defined in the manager manifest
+  - not-observed: no manager deployment manifests in scope
 
-- **Resource Management**: CPU and memory requests and limits are defined for the controller manager deployment to prevent OOMKills or node exhaustion
-- **Security Context**: Controller pods should generally trend toward Restricted Pod Security Standards (`runAsNonRoot: true`, `allowPrivilegeEscalation: false`). Treat `readOnlyRootFilesystem: true` as a strong recommendation when the image and runtime layout support it
-- **Health Probes**: Liveness (`/healthz`) and readiness (`/readyz`) probes are configured in the deployment manifest and correctly implemented in `main.go`
-- **Network Policies**: If the controller exposes network endpoints (metrics, webhooks, health probes) or communicates with external services, assess whether `NetworkPolicy` resources are expected for the target environment. Their absence is a stronger finding in hardened or multi-tenant clusters than in permissive internal environments
+- **3b. Security context trends toward restricted defaults**
+  - title: "Security context does not trend toward restricted defaults"
+  - finding: the manager deployment does not set a restrictive security context (e.g., missing `runAsNonRoot`, `readOnlyRootFilesystem`, or `allowPrivilegeEscalation: false`) (`Major`)
+  - pass: security context sets restricted defaults
+  - not-observed: no manager deployment manifests in scope
+
+- **3c. Health probes exist and match manager setup**
+  - title: "Missing or misconfigured health probes"
+  - finding: the manager deployment lacks liveness or readiness probes, or probes do not match the manager's health endpoint configuration (`Major`)
+  - pass: health probes exist and match the manager setup
+  - not-observed: no manager deployment manifests in scope
+
+- **3d. Network policy is present in hardened environments**
+  - title: "Missing network policy in hardened environment"
+  - finding: no network policy exists and the repository clearly targets hardened or multi-tenant environments (`Minor`)
+  - pass: network policy is defined, OR the repository does not target hardened/multi-tenant environments
+  - not-observed: cannot determine target environment from scope
 
 ### 4. OpenShift TLS Configuration Compliance
 
-> Only applicable when the controller/operator targets OpenShift. Skip this section if the controller is platform-agnostic or targets vanilla Kubernetes only.
+Apply this area only when repository evidence shows the controller targets OpenShift.
 
-For OpenShift-targeted operators, verify current platform guidance before treating TLS configuration as a hard requirement. Favor findings that are anchored in current OpenShift documentation over version-specific or time-sensitive assumptions. If the exact OpenShift requirement cannot be confirmed from the references available in scope, mark the check as `Not verified` and do not describe it as a release blocker.
+- **4a. No hardcoded TLS settings overriding platform-managed TLS**
+  - title: "Hardcoded TLS settings override platform-managed TLS"
+  - finding: TLS cipher suites, protocol versions, or certificate paths are hardcoded when local pinned references in scope show platform-managed TLS is required (`Critical`)
+  - pass: TLS configuration defers to the platform or uses configurable settings that align with platform-managed TLS
+  - not-observed: no TLS configuration in scope, or controller does not target OpenShift
 
-- **No hardcoded TLS configuration**: No local or hardcoded server-side TLS protocol versions, cipher suites, or curves in the codebase or deployment manifests unless the deviation is intentional, configurable, and documented
-- **Central TLS source**: When current OpenShift guidance requires platform-managed TLS, the component fetches its TLS server settings from the appropriate central configuration source instead of relying on local defaults:
-  - **API Server configuration** — default for most components
-  - **Kubelet configuration** — for components running on nodes
-  - **Ingress configuration** — for components serving ingress traffic
-- **Explicit TLS profile respect**: When the component is expected to honor the platform TLS profile, it explicitly applies the relevant settings instead of silently relying on Go `crypto/tls` defaults
-- **Custom TLS profiles**: The component correctly handles customer-defined TLS profiles where platform-managed TLS is part of the product contract, not just the named presets (Old, Intermediate, Modern)
-- **Managed operands**: When the operator configures server TLS for managed operands or exposes TLS-related CR fields, verify those settings inherit from the intended cluster or operator-level source; do not assume every managed CR must expose its own TLS knobs
-- **Server-side scope**: This section applies to TLS server settings exposed by the operator, its webhooks, or managed operands. Client TLS settings are not in scope
-- **Opt-out with documentation**: If the component has a legitimate reason to deviate from the cluster-wide TLS default, it should expose its own configuration knob that defaults to the cluster-wide config, and the deviation should be clearly documented
+## Anti-Findings
 
-Severity mapping:
-- Hardcoded TLS config or ignoring a required central TLS source when current OpenShift guidance clearly applies: `must` (Critical)
-- Not handling custom TLS profiles where platform-managed TLS is required: `should` (Major)
-- Missing documentation for an intentional opt-out deviation: `contextual` (Minor)
+Do not emit findings for:
 
-## Assessment Procedure
+- **4b**: if the necessary OpenShift guidance is not available locally, mark area 4 `Not verified` — do not create a finding
+- **4c**: do not use live platform guidance or time-sensitive web lookups in deterministic mode
 
-Use this repeatable workflow:
+## Deterministic Procedure
 
-1. Determine scope from `$ARGUMENTS`, git diff, or targeted controller/test packages.
-   - If `$ARGUMENTS` points to a GitHub repository, prioritize `controllers/`, test directories, and `main.go` as initial evidence sources.
-2. If no controller/operator implementation assets are present in scope, stop and return `Not applicable`.
-3. Collect evidence first (specific files and call sites), then classify issues by impact.
-4. Mark each finding as `must`, `should`, or `contextual` based on production risk.
-5. Map internal labels to report severities:
-   - `must` -> `Critical`
-   - `should` -> `Major`
-   - `contextual` -> `Minor`
-6. If runtime validation is unavailable (for example, tests cannot be executed or lint/policy tools are not runnable), perform static evidence review and mark those checks as `Not verified` with reduced confidence.
-7. **Adversarial validation**: Launch a clean-context validator subagent with the draft findings, draft highlights, and scope. See [Leaf Validator Subagent](#leaf-validator-subagent) for the validator brief and isolation rules.
-8. Apply validation results: update severities, remove dismissed findings, adjust or remove highlights per validator verdicts. Validation **always runs** and its results are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
-9. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
+Run the assessment in this exact order:
 
-## Leaf Validator Subagent
+1. Resolve scope from explicit scope text or `$ARGUMENTS`.
+2. Run the static analyzer with `--skill production-readiness`. Load the full JSON output into context.
+3. If `manifest.count` is 0, return `Not applicable`.
+4. For test coverage checks (1a-c), read the test files listed in the `test_discovery` fact from the manifest entries to examine test patterns, table-driven tests, and timing usage.
+5. Run the gopls verification protocol for checklist areas 2a and 2b as specified above.
+6. Walk every checklist item (1a through 4a) in order. For each item, record a disposition: `finding`, `pass`, or `not-observed` using the criteria defined above, the analyzer facts, and gopls verification results. Do not skip items.
+7. Draft findings only from items with `finding` disposition. Every finding must trace to a specific checklist item ID (e.g., "3b"). Observations outside the checklist may appear in a `Notes` section but do not receive an ID, severity, or score impact.
+8. Apply anti-finding rules to dismiss any violations.
+9. Run one deterministic leaf validation pass in the same session:
+   - dismiss findings unsupported by cited evidence
+   - dismiss any anti-finding violations
+   - lower severity only when the written criteria support the lower level
+   - remove or reword highlights that contradict findings
+10. Sort findings using the shared schema rules. Assign final IDs after sorting.
+11. Compute score and severity counts.
 
-After the primary analysis produces draft findings and draft highlights, launch a **separate subagent** to adversarially validate the results. The validator operates with a clean context — it does not receive the primary reviewer's reasoning or intermediate notes.
+Use area names exactly as written in the section headings above.
 
-### Isolation rules
+In deterministic mode do not:
 
-- Run in a separate subagent
-- Receive only: the scope (from `$ARGUMENTS` or resolved defaults), draft findings, and draft highlights
-- Re-read code independently from the evidence locations in each finding's `where` field
-- Do not rely on the primary reviewer's internal reasoning
+- default to `git diff`
+- expand scope beyond what the evidence manifest discovered
+- launch subagents
+- use current platform guidance from outside the repository
+- use ad-hoc `sg` (ast-grep) queries for facts the analyzer already provides
+- skip gopls verification steps defined in the protocol
 
-### Validator brief
+`--mode=exploratory` may widen scope after the manifest and may run additional searches, but the report format and scoring stay the same.
 
-> **Role**: You are a skeptical reviewer. Your job is to challenge each finding from a production readiness assessment and determine whether it actually impacts runtime behavior, correctness, or operational safety. You also verify that positive highlights do not contradict the findings.
->
-> **Inputs you receive**:
-> - The draft findings list (each following the canonical finding model from `validation-output-schema.md`)
-> - The draft positive highlights list (each with: `id`, `sourceSkill`, `description`). For this leaf skill, `sourceSkill` is always `k8s.controller-production-readiness`
-> - The scope so you can read the same code
->
-> **Your task**:
->
-> **Part 1 — Validate findings:**
-> For each finding, independently read the code at the referenced location and evaluate:
-> 1. **Is the finding accurate?** Does the code actually exhibit the described problem?
-> 2. **Does it affect behavior?** Would fixing this change runtime behavior, correctness, or operational safety — or is it purely stylistic / cosmetic / theoretical?
-> 3. **Is the severity appropriate?** A pattern that looks non-ideal but cannot cause incorrect behavior, data loss, or operational failure should be downgraded.
->
-> **Part 2 — Validate highlights against findings:**
-> For each positive highlight, check whether it contradicts any finding:
-> - A highlight must not praise a pattern that is also flagged as a finding.
-> - If a highlight praises a pattern whose absence is flagged as a finding anywhere in the report, mark the highlight for removal or rewording.
-> - If the same concept is used correctly in some code paths and incorrectly in others, the correct usage is not a highlight — only the incorrect usage should appear (as a finding).
-> - Highlights that do not conflict with any finding should be kept as-is.
->
-> **Downgrade rules** (findings only):
-> - A finding that is factually correct but has **no behavioral impact** → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)
-> - A finding where the described problem **cannot occur** given the surrounding code → dismiss entirely
-> - A finding where the severity is appropriate and the behavioral impact is real → keep as-is
->
-> **Output schema**:
->
-> Finding validations (one entry per finding):
-> ```
-> findingId: <id matching the draft findings list>
-> originalSeverity: critical / major / minor
-> validatedSeverity: critical / major / minor / dismissed
-> verdict: confirmed / downgraded / dismissed
-> reason: <1-2 sentences explaining why — reference specific code evidence>
-> validationLayer: leaf
-> ```
->
-> Highlight validations (one entry per highlight that needs adjustment):
-> ```
-> highlightId: <id matching the draft highlights list>
-> verdict: keep / remove / reword
-> reason: <1-2 sentences explaining the contradiction with a specific finding>
-> suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
-> ```
->
-> **Verdict vocabulary**: Leaf validators use `confirmed`, `downgraded`, or `dismissed`. The orchestrator validator uses `confirmed`, `adjusted`, or `dismissed` instead, because it operates on already-validated findings and makes cross-skill adjustments rather than per-finding accuracy checks.
->
-> Do **not** produce new findings. Your role is to validate, not to review.
+## Severity Mapping
 
-### Applying validation results
-
-1. Update each finding's severity to the `validatedSeverity`.
-2. Remove any finding with `validatedSeverity: dismissed`.
-3. Remove any highlight with `verdict: remove`.
-4. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
-5. Keep downgrade and dismissal rationale for the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
-6. Recompute severity counts using the validated severities.
+Severity for each checklist item is defined inline in the assessment areas above. When evidence fits two adjacent levels and the criteria do not force the higher level, choose the lower level.
 
 ## Scoring
 
 1. Start at 100.
-2. For each finding, subtract points based on severity:
-   - Critical: **-20** per finding
-   - Major: **-10** per finding
-   - Minor: **-3** per finding
+2. Subtract:
+   - `Critical`: 20
+   - `Major`: 10
+   - `Minor`: 3
 3. Floor score at 0.
+4. Show arithmetic in the report.
 
 Interpretation:
 
-- **90-100**: Production-ready with minor polish
-- **75-89**: Solid baseline, a few important gaps
-- **50-74**: Significant issues to address before production
-- **<50**: High operational risk; major redesign/fixes recommended
+- `90-100`: Production-ready with minor polish
+- `75-89`: Solid baseline, a few important gaps
+- `50-74`: Significant issues to address before production
+- `<50`: High operational risk; major redesign or fixes recommended
 
 ## Output Format
 
-Produce the assessment in this format. All sections are always included unless noted otherwise.
-Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md).
+Produce the assessment using the canonical model from [validation-output-schema.md](../../references/validation-output-schema.md).
 
 Output conventions:
 
-- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `controller://MyReconciler`)
-- `where` should use repo-relative GitHub-style location string(s) (for example, `controllers/myresource_controller.go#L118-L146`)
-- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
+- `scope` should use a URI-like string such as `repo://org/repo`, `dir://controllers`, or `controller://MyReconciler`
+- `where` should use repo-relative GitHub-style location strings
+- Sort findings by severity, area, `where`, and title before assigning final IDs
+
+### Evidence Manifest
+
+Paste the `manifest` section from the analyzer JSON output, including `count`, `hash`, and the categorized file entries. Do not edit, reformat, or summarize the output. This section makes the report auditable and verifiable.
 
 ### Summary
 
-2-3 sentences describing the overall production readiness of the controller.
+Write 2-3 sentences describing production readiness.
 
 Score table:
 
 | Metric | Value |
 |--------|-------|
-| **Score** | 0-100 (or `Not applicable`) |
-| **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
+| **Score** | 0-100 or `Not applicable` |
+| **Interpretation** | Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
 
 Severity count table:
 
@@ -237,47 +265,34 @@ Severity count table:
 | Major | _n_ |
 | Minor | _n_ |
 
-Findings summary table (one row per finding, sorted by severity then by area):
+Findings summary table (use the checklist `title` in the What column):
 
 | # | Severity | Area | What | Where | Confidence |
 |---|----------|------|------|-------|------------|
 
-- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
+### Findings
 
-### Findings (only with `--details`)
+For each finding, use the canonical text from the checklist item:
 
-This section is only included when the `--details` flag is passed.
+- **Title**: use the `title` from the checklist item verbatim
+- **What**: use the `finding` text from the checklist item verbatim
+- **Checklist item**: the item ID (e.g., 3b)
+- **Severity**: from the checklist item
+- **Area**: exact section heading
+- **Where**: repo-relative paths with line ranges from the evidence
+- **Confidence**: `High` if all `where` entries have line ranges, `Medium` if any are path-only, `Low` if no `where` references
+- **Not verified**: assumptions or checks not performed
+- **Why**: explain how the specific code triggers this checklist criterion — reference the actual function names, variables, and control flow found in the evidence
+- **Fix**: concrete suggested change using the specific types and patterns from the codebase
 
-For each finding (numbered to match the summary table), produce:
+### Validation
 
-#### _N_. _Finding title_
+Include this section when one or more findings or highlights changed during the deterministic second pass. Otherwise render "No adjustments."
 
-| | |
-|---|---|
-| **Severity** | Critical / Major / Minor |
-| **Area** | Assessment area name |
-| **Where** | GitHub-style location string(s) |
-| **Confidence** | High / Medium / Low |
-| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
+### Highlights
 
-**Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
+Include only positive highlights that do not contradict any finding.
 
-**Fix**: Concrete suggested change.
+### Notes
 
----
-
-### Validation (only with `--details`)
-
-**Do NOT include this section unless `--details` is passed.** When `--details` is active and the validation phase produced changes, list each downgraded or dismissed finding:
-
-| # | Original Severity | Validated Severity | Verdict | Reason |
-|---|-------------------|--------------------|---------|--------|
-
-Highlight validation changes (only when one or more highlights were removed or reworded):
-
-| Highlight | Verdict | Reason | Suggested Rewording |
-|-----------|---------|--------|---------------------|
-
-### Positive Highlights
-
-Things the implementation does well, patterns worth preserving or replicating.
+Optional. Observations outside the checklist that may be useful but do not receive IDs, severity, or score impact.

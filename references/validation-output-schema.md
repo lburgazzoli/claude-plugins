@@ -2,13 +2,19 @@
 
 Use this reference for validation-style skills that produce findings, highlights, validation adjustments, and evidence metadata.
 
-This schema is documentation-first. It defines a canonical information model that skills can render as Markdown reports. It is not a strict JSON Schema or parser contract.
+When a skill also consumes `k8s-controller-analyzer` JSON as input evidence, pair
+this file with [analyzer-output-schema.md](./analyzer-output-schema.md). This
+file defines report output semantics; the analyzer schema file defines analyzer
+input semantics.
+
+This schema remains documentation-first. It defines a canonical information model that skills can render as Markdown reports. It is not a strict JSON Schema or parser contract. However, validation-style skills in this repository should treat the ordering, casing, and normalization rules below as normative so repeated runs converge on byte-identical Markdown when the underlying evidence does not change.
 
 ## Goals
 
 - Keep validation skills consistent without duplicating the same report contract in every `SKILL.md`
 - Provide a canonical finding model that orchestration skills can merge and validate
 - Preserve readable Markdown output while allowing optional JSON-like serialization when helpful
+- Make report ordering and identifiers deterministic enough for golden testing
 
 ## Canonical Report Envelope
 
@@ -37,7 +43,28 @@ Use these top-level fields when describing structured output:
 - `summary`: short narrative summary
 - `findings`: list of canonical finding objects
 - `highlights`: list of canonical highlight objects
-- `validation`: list of validation outcomes, usually populated when findings were confirmed, downgraded, dismissed, or highlights were adjusted
+- `validation`: list of validation outcomes, usually populated when findings were confirmed, adjusted, or dismissed
+
+## Deterministic Rendering Rules
+
+Validation-style skills in this repository should follow these rules unless a skill explicitly opts into exploratory behavior:
+
+1. Resolve scope using a fixed search order documented in the skill file.
+2. Normalize `scope` to a URI-like string whenever enough information is available.
+3. Normalize every `where` entry to repo-relative `path#Lstart-Lend`, `path#Lstart`, or plain `path`.
+4. Sort findings before assigning final IDs using:
+   - severity order: `critical`, `major`, `minor`
+   - `area`
+   - first `where` entry
+   - `title`
+5. Sort highlights using:
+   - `sourceSkill`
+   - `description`
+6. Assign final finding IDs only after sorting and after any validation adjustments have been applied.
+7. Use stable display casing:
+   - severities: `Critical`, `Major`, `Minor`
+   - confidence: `High`, `Medium`, `Low`
+8. Always render empty `highlights` and `validation` sections consistently rather than conditionally changing structure unless the skill explicitly documents otherwise.
 
 ## Canonical Finding Object
 
@@ -65,7 +92,7 @@ Use these fields for each finding:
 - `why`: explanation of impact and reasoning
 - `fix`: concrete suggestion
 - `confidence`: `high`, `medium`, or `low`
-- `notVerified`: assumptions, runtime checks not performed, or unresolved unknowns; use an empty list or `[]` when there are none. Do not use this field for validation history or downgrade provenance; keep that in `validation`
+- `notVerified`: assumptions, runtime checks not performed, or unresolved unknowns; use an empty list or `[]` when there are none. Do not use this field for validation history; keep that in `validation`
 
 ### `scope`
 
@@ -77,7 +104,6 @@ Use these fields for each finding:
 - `package://api/v1alpha1`
 - `controller://ClusterDeploymentReconciler`
 - `api://infrastructure.cluster.x-k8s.io/v1beta1/AWSCluster`
-- `diff://working-tree`
 - `diff://HEAD`
 
 If no scheme is present, treat the value as legacy free text for backward compatibility.
@@ -109,7 +135,7 @@ For leaf skills, `sourceSkill` is usually the same as `skill`. For orchestration
 
 ## Validation Results
 
-Use these fields when a validator confirms, downgrades, or dismisses findings:
+Use these fields when a validator confirms, adjusts, or dismisses findings:
 
 - `findingId`
 - `originalSeverity`
@@ -122,17 +148,17 @@ Recommended values:
 
 - `originalSeverity`: `critical`, `major`, `minor`
 - `validatedSeverity`: `critical`, `major`, `minor`, `dismissed`
-- `verdict`: `confirmed`, `downgraded`, `adjusted`, `dismissed`
+- `verdict`: `confirmed`, `adjusted`, `dismissed`
 - `validationLayer`: `leaf`, `orchestrator`
 
 ### Validation Layers
 
-Validation operates in two complementary layers. The authoritative rules for each layer live in the individual skill files; this section provides a brief summary for schema consumers.
+Validation may operate in two complementary layers:
 
-- **`leaf`**: Per-finding precision. Each leaf skill launches a clean-context validator subagent that re-reads code independently and checks factual accuracy, behavioral impact, severity calibration, and within-skill highlight consistency. Leaf validators do not produce new findings. Leaf verdicts use `confirmed`, `downgraded`, or `dismissed`.
-- **`orchestrator`**: Cross-skill consistency. The orchestrator launches a validator subagent after merging findings from multiple sub-skills. It checks deduplication correctness, cross-skill severity reconciliation, cross-skill highlight contradictions, and narrative coherence. It does not re-apply single-finding downgrade rules — it trusts the leaf validation results as its baseline. Orchestrator verdicts use `confirmed`, `adjusted`, or `dismissed`.
+- `leaf`: per-finding deterministic second-pass review inside a single skill. The reviewer re-checks evidence, severity, and highlight contradictions using the same fixed checklist.
+- `orchestrator`: cross-skill consistency review after merging findings from multiple skills. It checks deduplication correctness, cross-skill contradictions, and score recomputation.
 
-When `--details` is active, `validationLayer` lets the report distinguish which layer produced each validation entry. For leaf-only reports (running a single sub-skill directly), all validation entries are `leaf`. For merged reports (via the orchestrator), entries may be either `leaf` or `orchestrator`.
+Validation layers must not invent new findings during the second pass. They may only keep, adjust, or dismiss draft findings.
 
 ### Highlight Validation
 
@@ -188,7 +214,7 @@ Human-readable labels such as `Architecture` or `Production Readiness` should be
 {
   "schemaVersion": "1.0",
   "skill": "k8s.controller-api",
-  "scope": "diff://working-tree",
+  "scope": "dir://api",
   "status": "completed",
   "scores": {
     "score": 82,

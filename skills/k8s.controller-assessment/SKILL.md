@@ -5,250 +5,182 @@ description: Comprehensive Kubernetes controller assessment combining architectu
 
 # Kubernetes Controller Assessment
 
-Perform a comprehensive assessment of a Kubernetes controller by invoking three focused skills in parallel and merging their results into a single report.
-
-## Inputs
-
-- If `$ARGUMENTS` is provided, parse orchestration flags first, then pass only the remaining scope text to each selected sub-skill.
-- GitHub repository inputs may be full URLs (for example, `https://github.com/org/repo`) or shorthand (`org/repo`). These are forwarded as scope text to sub-skills, which handle them directly.
-- If `$ARGUMENTS` is a GitHub repository, do not apply local `git diff` defaults in sub-skills.
-- If no arguments are provided, each sub-skill will fall back to its own defaults (git diff, then focused directories, then expand as needed for evidence).
-- `--scope=<list>` limits which sub-skills to run. Accepted values: `architecture`, `api`, `production-readiness` (comma-separated). Examples:
-  - `--scope=architecture` — run only the architecture review
-  - `--scope=architecture,api` — run architecture and API conventions, skip production readiness
-  - If `--scope` is omitted, all three sub-skills run.
-  - When scope restricts to a subset, scoring uses only the included sub-skills (renormalize weights as described in Scoring).
-- A sub-skill may return `Not applicable` (for example, API review when a project has no Kubernetes APIs/CRDs).
-- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. This flag is passed through to each sub-skill. Without this flag, only the summary tables are produced.
-
-## Input Validation
-
-The only recognized flags are `--scope=<list>` and `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
-
-Validate `--scope=<list>` values strictly:
-
-- Split by comma and trim whitespace.
-- Accepted values are exactly: `architecture`, `api`, `production-readiness`.
-- If any value is unknown, stop before running the assessment and ask the user to confirm whether it is intentional or a typo.
-- If `--scope` is present but resolves to an empty list after parsing, stop and ask for a valid scope.
+Perform a comprehensive assessment of a Kubernetes controller by invoking three focused skills and merging their results into one deterministic report.
 
 ## References
 
-Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report, finding, evidence, highlight, and validation model used by validation-style skills.
+Consult [analyzer-output-schema.md](../../references/analyzer-output-schema.md) for the analyzer JSON input contract.
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report model.
+Consult [reproducible-assessments.md](../../references/reproducible-assessments.md) for deterministic execution rules.
 
-## Execution
+## Inputs
 
-Resolve selected sub-skills from `--scope` first:
+- `$ARGUMENTS` may contain:
+  - scope text such as files, packages, controller names, or GitHub repositories
+  - `--scope=<list>`
+  - `--mode=deterministic`
+  - `--mode=exploratory`
+- Accepted `--scope` values are `architecture`, `api`, and `production-readiness`.
+- Default mode is `--mode=deterministic`.
+- If no `--scope` is provided, run all three sub-skills.
 
-- If `--scope` is omitted, select all three sub-skills.
-- If `--scope` is present, select only the listed sub-skills.
+## Input Validation
 
-Build child arguments before invocation:
+- The only recognized flags are `--scope=<list>`, `--mode=deterministic`, and `--mode=exploratory`.
+- If `$ARGUMENTS` contains any other `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+- Validate `--scope=<list>` strictly:
+  - split by comma
+  - trim whitespace
+  - accepted values are exactly `architecture`, `api`, `production-readiness`
+  - if any value is invalid, stop and ask for confirmation
 
-1. Parse and remove `--scope=<list>` from `$ARGUMENTS` (orchestrator-only flag; never forwarded).
-2. Preserve `--details` only when present.
-3. Treat remaining non-flag text as the shared child scope string.
-4. Forward to each selected sub-skill using: `<child-scope> [--details]`.
+## Pre-Assessment Setup
 
-Run the selected skills in parallel, passing only child arguments to each selected skill:
+Before invoking any child skill, run the static analyzer once. This avoids triple-running across child skills.
 
-1. `/k8s.controller-architecture` — reconciliation, error handling, RBAC, status, finalizers, performance, cache
-2. `/k8s.controller-api` — CRD structure, API versioning, webhooks, marker correctness
-3. `/k8s.controller-production-readiness` — test coverage, observability (events, logs, metrics)
+Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads passed to child skills.
 
-Wait for all selected sub-skills to complete before proceeding to the merge phase.
+```bash
+<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --format json
+```
 
-If a sub-skill returns `Not applicable`, include that result in the report and continue without treating it as a failure.
-If parallel execution is unavailable, run the selected sub-skills sequentially using the same child-argument and merge rules.
+Load the full JSON output into context. Child skills detect the already-loaded analyzer JSON and skip their own run step. Note: the orchestrator runs without `--skill` since each child skill needs different manifest categories. Each child skill will reference the loaded facts directly.
 
-## Merge and Severity Normalization
+## Child Invocation Rules
 
-After sub-skills complete, merge and normalize findings in this exact order:
+Resolve selected sub-skills first:
 
-1. Combine all findings from selected sub-skills into one list.
-2. Combine all positive highlights from selected sub-skills into one list, preserving the source sub-skill for each highlight.
-3. Deduplicate overlapping findings — two findings are considered duplicates when they reference the same code location (`where`) and describe the same underlying problem. When in doubt, prefer to keep both as separate findings rather than incorrectly merging distinct issues.
-4. For each merged finding, keep a `sources` list containing every sub-skill that reported it, using canonical skill identifiers from [validation-output-schema.md](../../references/validation-output-schema.md) (`k8s.controller-architecture`, `k8s.controller-api`, `k8s.controller-production-readiness`).
-5. If two or more sub-skills report the same issue with different severities, keep the higher severity.
-6. Set `primarySource` for every finding using this priority order: `k8s.controller-architecture` > `k8s.controller-api` > `k8s.controller-production-readiness`. For single-source findings, use that source. For multi-source findings, use the source that reported the higher severity; if severities tied, use the priority order.
-7. Reconcile remaining fields for each merged finding: `title`, `what`, `area`, `why`, `fix`, and `confidence` are taken from the `primarySource` contribution. `where` is the union of all contributing sources' locations, deduplicated. `notVerified` is the union of all contributing sources' entries, deduplicated.
-8. Run validation on the merged findings and highlights, and apply validation adjustments.
-9. Compute severity counts and scores only after the final merged severities are settled.
+- `architecture` -> `/k8s.controller-architecture`
+- `api` -> `/k8s.controller-api`
+- `production-readiness` -> `/k8s.controller-production-readiness`
 
-## Validation Phase
+Build child arguments in this order:
 
-> This phase **always runs** after merging and deduplication. Its results (severity adjustments and dismissals) are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
+1. Remove `--scope=<list>`.
+2. Preserve `--mode=...`.
+3. Treat remaining non-flag text as shared child scope text.
 
-Each individual sub-skill performs its own subagent-based adversarial validation before returning findings (see the Leaf Validator Subagent section in each sub-skill). Those leaf validators handle per-finding precision: factual accuracy, behavioral impact, severity calibration, and within-skill highlight consistency.
+## Deterministic Execution
 
-This orchestrator-level validation serves as a **cross-skill consistency check**. It does not re-validate individual findings or re-apply single-finding downgrade rules — it trusts the leaf validation results as its baseline. Instead, it focuses on issues that only become apparent when viewing merged results from multiple skills holistically.
+In deterministic mode:
 
-For the final merged report, this orchestrator-level validation is authoritative.
+0. Run Pre-Assessment Setup (build and run static analyzer, load JSON into context).
+1. Run child skills sequentially in this fixed order:
+   - `k8s.controller-architecture`
+   - `k8s.controller-api`
+   - `k8s.controller-production-readiness`
 
-After findings are merged and deduplicated, launch an **adversarial validation subagent** with a clean context.
 
-### Validator subagent instructions
+If a sub-skill is not selected by `--scope`, skip it.
+If a sub-skill returns `Not applicable`, keep that status and continue.
 
-Launch a separate subagent with the following brief. Do **not** share the assessment agents' context — the validator must read the code independently to avoid confirmation bias.
+In deterministic mode do not:
 
-> **Role**: You are a cross-skill consistency reviewer. Your job is to verify the coherence of a merged controller assessment report that combines findings from multiple sub-skills. Each finding has already been validated for factual accuracy and severity by its leaf skill's validator — you do not repeat that work. Instead, you focus on merge-level concerns.
->
-> **Inputs you receive**:
-> - The merged findings list (each extending the base finding model from `validation-output-schema.md` with `sources` and `primarySource`)
-> - The merged positive highlights list (each with: `id`, `sourceSkill`, `description`)
-> - The scope (`$ARGUMENTS`) so you can read the same code
->
-> **Your task**:
->
-> **Part 1 — Verify deduplication correctness:**
-> Review findings that were merged as duplicates:
-> - Are they truly the same underlying issue, or were distinct problems collapsed?
-> - Are there findings kept as separate that actually describe the same issue from different sub-skills?
-> If deduplication was incorrect, note which findings should be split or merged and why.
->
-> **Part 2 — Reconcile cross-skill severity:**
-> When multiple sub-skills reported the same issue at different severities:
-> - Is the chosen severity (the higher one per merge rules) appropriate for the merged context?
-> - Does the sub-skill that assigned the higher severity have stronger authority over that issue's domain?
-> If a severity should be adjusted, provide the corrected severity and reasoning.
->
-> **Part 3 — Check cross-skill highlight contradictions:**
-> For each positive highlight, check whether it contradicts a finding from a **different** sub-skill:
-> - A highlight from sub-skill X must not praise a pattern that sub-skill Y flagged as a finding. For example: praising "Controller X uses RetryOnConflict" (from Architecture) while Production Readiness flags "Controllers Y and Z lack RetryOnConflict" is a contradiction — if the absence of the pattern is a problem, its presence in one place is not a highlight, it is the expected baseline.
-> - If a highlight praises a pattern whose absence is flagged as a finding by another sub-skill, mark the highlight for removal or rewording.
-> - Highlights that do not conflict with any finding from any sub-skill should be kept as-is.
->
-> **Part 4 — Assess narrative coherence:**
-> Review the merged findings and highlights as a whole:
-> - Do any findings contradict each other across sub-skills?
-> - Would the merged report present a confusing or inconsistent picture to the reader?
-> If narrative issues exist, note which findings or highlights need adjustment.
->
-> **Escalation**: If you observe that deduplication was too aggressive (distinct issues collapsed into one finding) or too conservative (clearly identical issues kept separate), use the "Deduplication corrections" output to request a split or merge. If the merged results appear internally inconsistent in ways not covered by Parts 1-4 (for example, contradictory severity signals across sub-skills for related but non-duplicate findings), note the inconsistency in a finding validation entry with verdict `adjusted` and explain the concern in the `reason` field. Do not produce new findings or invent new severity levels; work within the existing schema.
->
-> **Important**: Do **not** re-check factual accuracy of individual findings or re-apply single-finding downgrade rules (no behavioral impact → downgrade, cannot occur → dismiss). Those checks were already performed by each sub-skill's leaf validator. Treat leaf-validated severities as your baseline.
->
-> **Output schema**:
->
-> Finding validations (one entry per finding that needs adjustment):
-> ```
-> findingId: <id matching the merged findings list>
-> originalSeverity: critical / major / minor
-> validatedSeverity: critical / major / minor / dismissed
-> verdict: confirmed / adjusted / dismissed
-> reason: <1-2 sentences explaining the cross-skill concern>
-> validationLayer: orchestrator
-> ```
->
-> Highlight validations (one entry per highlight that needs adjustment):
-> ```
-> highlightId: <id matching the merged highlights list>
-> verdict: keep / remove / reword
-> reason: <1-2 sentences explaining the cross-skill contradiction>
-> suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
-> ```
->
-> Deduplication corrections (only if deduplication was incorrect):
-> ```
-> action: split / merge
-> findingIds: [<ids of affected findings>]
-> reason: <1-2 sentences explaining why>
-> ```
->
-> **Verdict vocabulary**: The orchestrator validator uses `confirmed`, `adjusted`, or `dismissed` (not `downgraded`). This reflects that the orchestrator makes cross-skill adjustments on already-validated findings rather than per-finding accuracy downgrades, which are the responsibility of each leaf skill's validator.
->
-> Do **not** produce new findings. Your role is to verify merge consistency, not to review code.
+- run sub-skills in parallel
+- re-open scope inside the orchestrator
+- launch validator subagents
+- adopt the child skill's output format when only one child is selected
 
-### Applying validation results
+`--mode=exploratory` may run the same sub-skills with broader local exploration, but the merge algorithm stays the same.
 
-After the validator returns:
+## Finding Enrichment Before Merge
 
-**Finding adjustments:**
+Before merging, enrich each leaf finding with orchestrator fields:
 
-1. Update each finding's severity to the `validatedSeverity`.
-2. Remove any finding with `validatedSeverity: dismissed`.
-3. Apply any deduplication corrections (split or merge findings as directed).
-4. Keep adjustment rationale in the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
-5. Recompute severity counts and scores using the validated severities.
-6. If `--details` is active, include a **Validation** section after the Findings section listing all verdict changes (adjustments and dismissals) with reasons.
+1. Set `sources` to a single-element list containing the originating skill's canonical identifier (e.g., `["k8s.controller-architecture"]`).
+2. Set `primarySource` to the same skill identifier.
+3. Set `checklistItem` to the leaf finding's checklist item ID (e.g., `"5c"`).
 
-**Highlight adjustments:**
+These fields are required inputs to the merge algorithm. After deduplication, `sources` is the union of all contributing skills and `primarySource` is selected by the tie-breaking rules below.
 
-7. Remove any highlight with `verdict: remove`.
-8. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
-9. Keep all highlights with `verdict: keep` unchanged.
+## Merge And Normalization
 
-### Skipping validation
+After child skills complete and findings are enriched, merge in this exact order:
 
-If the merged findings list is empty **and** the merged highlights list is empty (all sub-skills returned no findings, no highlights, or `Not applicable`), skip the validation phase entirely. If findings are empty but highlights exist, still run the validator — restrict its scope to Part 3 (cross-skill highlight contradictions) and Part 4 (narrative coherence).
+1. Combine all findings from selected sub-skills.
+2. Combine all highlights from selected sub-skills.
+3. Normalize each finding:
+   - normalize `where`
+   - preserve `sources`
+   - preserve candidate `primarySource`
+4. Deduplicate with this fingerprint:
+   - `area`
+   - normalized problem class: the checklist item `title` from the originating leaf skill, used verbatim without paraphrasing
+   - primary `where` path
+   - primary line range when available
+5. If fingerprints match, merge findings.
+6. If merged severities differ, keep the higher severity.
+7. If merged severities tie, use this `primarySource` priority:
+   - `k8s.controller-architecture`
+   - `k8s.controller-api`
+   - `k8s.controller-production-readiness`
+8. Copy `title`, `what`, `area`, `why`, `fix`, and `confidence` from the `primarySource`.
+9. Union `where` and `notVerified`, preserving sorted order.
+
+If fingerprints differ, keep findings separate. Do not dedupe on prose similarity alone.
+
+## Orchestrator Validation
+
+Run one deterministic second pass after merging:
+
+1. Re-check dedupe decisions against the fingerprint rules.
+2. Re-check cross-skill highlight contradictions.
+3. Recompute severity counts and scores from the final merged findings.
+4. Dismiss or adjust findings only when the merge rules require it.
+
+The orchestrator second pass must not introduce new findings.
 
 ## Scoring
 
-Compute scores **after** the validation phase (using validated severities). Recompute sub-skill scores by re-applying the scoring formula to the validated merged findings for each sub-skill, then compute the overall score:
+Recompute child scores from final merged findings:
 
-- Each merged finding contributes to every sub-skill listed in its `sources`.
-- Use the merged finding's final severity (post-validation) for every contributing sub-skill.
-- Do not duplicate a finding more than once within the same sub-skill score.
-- For Architecture rescoring, preserve the original architecture area name and map it to categories as follows:
-  - Category A: `Reconciliation Idempotency and State Handling`, `Error Handling and Requeue Strategy`, `RBAC Least Privilege and Security`, `Status, Conditions, and Observed Generation`, `Ownership, Finalizers, and Cleanup Logic`
-  - Category B: `Resource Management and API Efficiency`, `Performance and Cache Usage`, `Cache Consistency and Client Type Alignment`
-  - If an Architecture finding is missing one of these exact area names, keep the finding in the merged report but mark Architecture rescoring as reduced-confidence in the summary rather than guessing a category
+- Architecture uses its category-weighted model. Map each finding's `area` to a category:
+  - Category A (weight 0.60): Reconciliation Idempotency and State Handling, Error Handling and Requeue Strategy, RBAC Least Privilege and Security, Status, Conditions, and Observed Generation, Ownership, Finalizers, and Cleanup Logic, Portability and Vendor API Dependencies
+  - Category B (weight 0.40): Resource Management and API Efficiency, Performance and Cache Usage, Cache Consistency and Client Type Alignment
+  - If an Architecture finding's area does not match any of these, keep the finding in the report but note reduced-confidence scoring in the summary
+- API uses flat deductions (Critical -20, Major -10, Minor -3, floor 0)
+- Production Readiness uses flat deductions (Critical -20, Major -10, Minor -3, floor 0)
 
-Sub-skill scoring models:
-- **Architecture**: uses weighted categories — Category A (Areas 1, 2, 4, 5, 6) at 60% and Category B (Areas 3, 7, 8) at 40%. Start each category at 100, deduct per finding, floor at 0, then compute `Architecture = A × 0.60 + B × 0.40`.
-- **API Conventions** and **Production Readiness**: use flat scoring — start at 100, deduct per finding (Critical -20, Major -10, Minor -3), floor at 0.
+Overall weights:
 
-- **Architecture** (from `/k8s.controller-architecture`): **50%**
-- **API Conventions** (from `/k8s.controller-api`): **25%**
-- **Production Readiness** (from `/k8s.controller-production-readiness`): **25%**
+- Architecture: `0.50`
+- API: `0.25`
+- Production Readiness: `0.25`
 
-`Overall = Architecture × 0.50 + API Conventions × 0.25 + Production Readiness × 0.25`
-
-If one or more sub-skills are `Not applicable`, exclude their weights and renormalize the remaining weights to sum to 1.0 before calculating `Overall`.
-If all sub-skills are `Not applicable`, do not compute `Overall`; report `Overall Score: Not applicable`.
-
-Example:
-- If `API Conventions` is `Not applicable`, renormalize `Architecture` and `Production Readiness` from `0.50/0.25` to `0.667/0.333`.
-- Then compute `Overall = Architecture × 0.667 + Production Readiness × 0.333`.
-- If `--scope=architecture`, compute `Overall = Architecture × 1.0`.
-- If `--scope=api,production-readiness`, renormalize `API/Production Readiness` from `0.25/0.25` to `0.50/0.50`.
-
-When the overall score reflects fewer than all three sub-skills (due to `--scope` or `Not applicable`), include a note in the Summary stating which dimensions contributed to the score.
+If one or more sub-skills are `Not applicable`, renormalize the remaining weights to sum to `1.0`.
+Show arithmetic for each contributing score and for the weighted overall score.
 
 Interpretation:
 
-- **90-100**: Production-ready with minor polish
-- **75-89**: Solid baseline, a few important gaps
-- **50-74**: Significant issues to address before production
-- **<50**: High operational risk; major redesign/fixes recommended
+- `90-100`: Production-ready with minor polish
+- `75-89`: Solid baseline, a few important gaps
+- `50-74`: Significant issues to address before production
+- `<50`: High operational risk; major redesign or fixes recommended
 
 ## Output Format
 
-Merge findings from selected sub-skills into a single report. Deduplicate overlapping findings that refer to the same underlying issue. Preserve full source attribution per finding (`sources`). If skills conflict on severity for the same issue, prefer the higher severity. If severity still ties, use source priority for display (`primarySource`): `Architecture` > `API` > `Production Readiness`.
-
-All sections are always included unless noted otherwise.
-Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md). Merged findings extend the base finding model with `sources` and `primarySource`.
+Produce the merged assessment using the canonical model from [validation-output-schema.md](../../references/validation-output-schema.md). When `--scope` selects a single child skill, use this orchestrator output format — not the child skill's native format. Unselected dimensions show `Not applicable`.
 
 Output conventions:
 
-- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `controller://MyReconciler`)
-- `where` should use repo-relative GitHub-style location strings (for example, `controllers/myresource_controller.go#L118-L146`)
-- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
-- Store `sources` and `primarySource` as canonical skill identifiers; derive display labels from them only when rendering Markdown
+- `scope` should use a URI-like string such as `repo://org/repo`, `dir://controllers`, or `controller://MyReconciler`
+- `where` should use repo-relative GitHub-style location strings
+- Sort merged findings by severity, area, `where`, and title before assigning final IDs
+- Sort highlights by `sourceSkill` and description
 
 ### Summary
 
-2-3 sentences describing the overall quality and maturity of the controller.
+Write 2-3 sentences describing overall controller maturity.
+If the overall score excludes one or more sub-skills, state which dimensions contributed.
 
 Score table:
 
 | Metric | Value |
 |--------|-------|
-| **Overall Score** | 0-100 (or `Not applicable`) |
-| **Architecture** | 0-100 (or `Not applicable`) |
-| **API Conventions** | 0-100 (or `Not applicable`) |
-| **Production Readiness** | 0-100 (or `Not applicable`) |
-| **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
+| **Overall Score** | 0-100 or `Not applicable` |
+| **Architecture** | 0-100 or `Not applicable` |
+| **API Conventions** | 0-100 or `Not applicable` |
+| **Production Readiness** | 0-100 or `Not applicable` |
 
 Severity count table:
 
@@ -258,52 +190,28 @@ Severity count table:
 | Major | _n_ |
 | Minor | _n_ |
 
-Findings summary table (one row per finding, sorted by severity then by primary source):
+Findings summary table:
 
-| # | Severity | Source | Area | What | Where | Confidence |
-|---|----------|--------|------|------|-------|------------|
+| # | Severity | Area | What | Where | Confidence | Source |
+|---|----------|------|------|-------|------------|--------|
 
-- **Source**: Display a human label derived from `primarySource` (`k8s.controller-architecture` -> `Architecture`, `k8s.controller-api` -> `API`, `k8s.controller-production-readiness` -> `Production Readiness`). If multiple sub-skills identified the same merged finding, optionally append `(+N more)` and list all contributors in `--details`.
-- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
+### Findings
 
-### Findings (only with `--details`)
+For each finding include:
 
-This section is only included when the `--details` flag is passed.
+- Severity
+- Source
+- Area
+- Where
+- Confidence
+- Not verified
+- Why
+- Fix
 
-For each finding (numbered to match the summary table), produce:
+### Validation
 
-#### _N_. _Finding title_
+Include this section when one or more findings or highlights changed during the orchestrator second pass. Otherwise render "No adjustments."
 
-| | |
-|---|---|
-| **Severity** | Critical / Major / Minor |
-| **Source** | Human label derived from canonical `primarySource` |
-| **Also reported by** | Human labels derived from `sources` beyond `primarySource` (or `—`) |
-| **Area** | Assessment area name |
-| **Where** | GitHub-style location string(s) |
-| **Confidence** | High / Medium / Low |
-| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
+### Highlights
 
-**Why**: Explanation of why this is an issue.
-
-**Fix**: Concrete suggested change.
-
----
-
-### Validation (only with `--details`)
-
-**Do NOT include this section unless `--details` is passed.** When `--details` is active and the validation phase produced changes, include the following tables as needed.
-
-Finding validation changes:
-
-| # | Original Severity | Validated Severity | Verdict | Reason |
-|---|-------------------|--------------------|---------|--------|
-
-Highlight validation changes (only when one or more highlights were removed or reworded):
-
-| Highlight | Verdict | Reason | Suggested Rewording |
-|-----------|---------|--------|---------------------|
-
-### Positive Highlights
-
-Notable strengths from selected sub-skills.
+Include only positive highlights that do not contradict any merged finding.

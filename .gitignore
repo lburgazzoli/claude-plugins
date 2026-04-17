@@ -107,3 +107,5 @@ hooks/**/*.a
 !.claude/
 .claude/settings.local.json
 .cursor/
+.codex
+.codex/

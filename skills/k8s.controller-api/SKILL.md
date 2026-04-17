@@ -1,220 +1,359 @@
 ---
 name: k8s.controller-api
-description: Review or audit Kubernetes CRD definitions, API types, webhooks, and markers for compliance with upstream Kubernetes API conventions.
+description: Review Kubernetes CRD definitions, API types, webhooks, and markers for compliance with upstream Kubernetes API conventions.
 ---
 
 # Kubernetes API Conventions Assessment
 
 Review Kubernetes Custom Resource Definitions (CRDs), API types, webhooks, and kubebuilder markers for compliance with upstream Kubernetes API conventions.
-This skill is primarily designed for Go controllers built with `controller-runtime`/kubebuilder patterns.
-
-## Inputs
-
-- If `$ARGUMENTS` is provided, treat it as scope (files, package, API type name, or GitHub repository).
-- GitHub repository inputs may be full URLs (for example, `https://github.com/org/repo`) or shorthand (`org/repo`).
-- If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source and do not apply local `git diff` defaults.
-- If no arguments are provided, assess current repository changes from git diff.
-- If there are no changes, start with `api/`, `pkg/apis/`, and `config/crd/` directories first; expand only when needed for evidence.
-- If the project does not define Kubernetes APIs/CRDs (no API types, no CRD manifests, and no related markers), skip this skill entirely and report `Not applicable`.
-- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
-
-## Input Validation
-
-The only recognized flag is `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
-When this skill is invoked by `/k8s.controller-assessment`, it should receive only scope text and optional `--details` (orchestration flags such as `--scope` are not valid here).
+This skill is primarily designed for Go controllers built with `controller-runtime` and kubebuilder patterns.
 
 ## References
 
-Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritative source of conventions and high-quality reference implementations.
-Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical finding, evidence, highlight, and validation model used by validation-style skills.
+Consult [k8s-upstream.md](../../references/k8s-upstream.md) for upstream conventions.
+Consult [analyzer-output-schema.md](../../references/analyzer-output-schema.md) for the analyzer JSON input contract.
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report model.
+Consult [reproducible-assessments.md](../../references/reproducible-assessments.md) for deterministic execution rules.
+
+## Inputs
+
+- `$ARGUMENTS` may contain:
+  - scope text such as files, packages, API type names, or GitHub repositories
+  - `--mode=deterministic`
+  - `--mode=exploratory`
+- Default mode is `--mode=deterministic`.
+- If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source.
+- If no API types, CRD manifests, or webhook assets are found in the resolved scope, return `Not applicable`.
+
+## Input Validation
+
+- The only recognized flags are `--mode=deterministic` and `--mode=exploratory`.
+- If `$ARGUMENTS` contains any other `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+
+## Static Analyzer
+
+In deterministic mode, build and run the static analyzer to extract structured facts from Go code and YAML manifests. This is the single evidence source.
+
+Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads.
+
+### Run
+
+```bash
+<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --skill api --format json
+```
+
+If the orchestrator (`k8s.controller-assessment`) has already run the analyzer and the JSON is loaded in context, skip the run step.
+
+### Load and use
+
+Load the full JSON output into context. The output includes:
+
+- A `manifest` section with `count`, `hash` (MANIFEST_HASH), and categorized file `entries` — include `manifest.hash` verbatim in the report for auditability
+- A `facts` array with all extracted evidence
+
+If `manifest.count` is 0, return `Not applicable`.
+
+This is the **primary evidence source** for all analysis. The output contains facts with these kinds:
+
+- `crd_type` — root CRD type markers (root marker, status subresource, resource scope, print columns, unsigned fields)
+- `crd_field` — field-level markers (optional/required, validation, JSON tags, omitempty, field types)
+- `crd_version` — CRD version storage/hub/spoke info
+- `webhook` — webhook type, path, failurePolicy, sideEffects, timeoutSeconds (from Go markers)
+- `crd_manifest` — CRD YAML: versions, conversion strategy, scope
+- `webhook_manifest` — webhook YAML: failurePolicy, sideEffects, timeoutSeconds, scopes
+
+Do not re-derive facts that the analyzer already provides.
+
+### Fact-to-checklist mapping
+
+| Analyzer Facts | Checklist Items |
+|----------------|-----------------|
+| `crd_type.has_status_field` + `crd_type.has_status_subresource` | 1a, 1b |
+| `crd_type.resource_scope` | 1c |
+| `crd_field.is_optional` + `crd_field.has_omitempty` | 1d |
+| `crd_field.is_required` + `crd_field.markers` | 1e |
+| `crd_type.unsigned_fields` | 1f |
+| `crd_field.markers` (enum markers) | 1g |
+| `crd_type.print_columns` | 1h |
+| `crd_type.has_status_field` + `crd_field` (status struct fields) | 1i |
+| `crd_version.storage` + `crd_version.hub` + `crd_version.spoke` | 2a-d |
+| `webhook.failure_policy` + `webhook.side_effects` + `webhook.timeout_seconds` | 3a-c |
+| `crd_type.has_root_marker` | 4e |
+| `crd_field.markers` + `crd_type` | 4a-d |
+
+## gopls Verification Protocol
+
+Use gopls MCP tools to verify and enrich the static analyzer's structural findings. These verification steps are **mandatory** in deterministic mode.
+
+### Field type verification (checklist 1d-g)
+
+For each `crd_field` fact:
+
+1. If a field has validation markers that might mismatch its type (e.g., `Minimum` on a string):
+   - Call `go_file_context` on the API types file to confirm the field's Go type
+   - Cross-reference marker applicability with the resolved type
+
+2. For enum fields with `kubebuilder:validation:Enum` markers:
+   - Call `go_symbol_references` for the enum type to find all declared constants
+   - Verify marker enum values match the declared constants
+
+### Version conversion verification (checklist 2a-d)
+
+For each set of `crd_version` facts for the same kind:
+
+1. If multiple versions exist and hub/spoke flags are set:
+   - Call `go_search` for `ConvertTo` and `ConvertFrom` methods to verify conversion implementations
+   - Verify schema differences between versions warrant conversion
+
+### Webhook handler verification (checklist 3e)
+
+For each `webhook` fact:
+
+1. Call `go_symbol_references` for the webhook handler methods (`Default`, `ValidateCreate`, etc.)
+2. In the handler body, check for external calls that could block:
+   - Use `go_file_context` on the handler file to see imports (HTTP clients, external services)
+
+### Marker correctness verification (checklist 4a-f)
+
+For `crd_type` and `crd_field` facts:
+
+1. Use `go_file_context` on API type files to see full type context
+2. For 4f (generated output matches committed): compare `crd_type` facts against committed CRD YAML from the manifest
 
 ## Assessment Areas
 
+Use area names exactly as written in the section headings below.
+
 ### 1. CRD Structure and Field Conventions
 
-- CRD follows Kubernetes API conventions:
-  - `spec` for desired state, `status` for observed state
-  - `+kubebuilder:subresource:status` marker is present on types with a `Status` field to enable the status subresource (required for `r.Status().Update()` and separate status RBAC)
-  - `+kubebuilder:resource:scope=` is explicitly set (`Cluster` or `Namespaced`) — do not rely on the implicit default. Cluster-scoped resources should be justified (most resources should be namespace-scoped). Verify scope aligns with RBAC markers and owner reference patterns
-  - Uses `int32`/`int64` for integers, avoids unsigned types
-  - Enums are string-typed CamelCase values
-  - Lists of named subobjects preferred over maps of subobjects
-  - All optional fields have `+optional` marker and `omitempty` JSON tag
-  - Required fields are validated with kubebuilder markers (`+kubebuilder:validation:Required`)
-- Printer columns (`+kubebuilder:printcolumn`) show useful summary info in `kubectl get`. Treat missing printer columns as `contextual` (recommendation), not `should`
+- **1a. Spec and status follow Kubernetes conventions**
+  - title: "Spec/status structure violates Kubernetes conventions"
+  - finding: `spec` or `status` struct layout does not follow Kubernetes conventions (e.g., status contains desired-state fields, spec contains observed-state fields) (`Major`)
+  - pass: `spec` holds desired state and `status` holds observed state consistent with Kubernetes conventions
+  - not-observed: no `spec` or `status` structs in scope
+
+- **1b. Status subresource marker is present**
+  - title: "Missing status subresource marker"
+  - finding: a `Status` field exists on the root type but `+kubebuilder:subresource:status` is absent (`Major`)
+  - pass: `+kubebuilder:subresource:status` is present when a `Status` field exists, or no `Status` field exists
+  - not-observed: no root types with `Status` fields in scope
+
+- **1c. Resource scope is explicitly set**
+  - title: "Resource scope not explicitly set"
+  - finding: `+kubebuilder:resource:scope=` is absent on a root type (`Minor`)
+  - pass: `+kubebuilder:resource:scope=` is explicitly set on all root types
+  - not-observed: no root types in scope
+
+- **1d. Optional fields have +optional and omitempty**
+  - title: "Optional field missing +optional or omitempty"
+  - finding: an optional field lacks `+optional` marker or `omitempty` JSON tag (`Major`)
+  - pass: all optional fields have both `+optional` and `omitempty`
+  - not-observed: no optional fields in scope
+
+- **1e. Required fields use explicit validation markers**
+  - title: "Required field lacks effective validation"
+  - finding: a required field has no `+kubebuilder:validation:Required` marker or equivalent schema enforcement (`Major`)
+  - pass: all required fields use explicit validation markers
+  - not-observed: no required fields in scope
+
+- **1f. Numeric fields avoid unsigned types**
+  - title: "Numeric field uses unsigned type"
+  - finding: a CRD field uses an unsigned integer type (`uint`, `uint32`, `uint64`) which is not representable in JSON Schema (`Minor`)
+  - pass: all numeric fields use signed types
+  - not-observed: no numeric fields in scope
+
+- **1g. Enums are string-typed CamelCase values**
+  - title: "Enum not string-typed CamelCase"
+  - finding: an enum field is not string-typed or its values do not follow CamelCase convention (`Major`)
+  - pass: all enum fields are string-typed with CamelCase values
+  - not-observed: no enum fields in scope
+
+- **1h. Printer columns are defined**
+  - title: "Missing printer columns"
+  - finding: no `+kubebuilder:printcolumn` markers are defined on a root type (`Minor`)
+  - pass: printer columns are defined on root types
+  - not-observed: no root types in scope
+
+- **1i. Status struct includes observedGeneration**
+  - title: "Status struct missing observedGeneration field"
+  - finding: the status struct does not include an `observedGeneration` field to signal which `.metadata.generation` the controller last processed (`Major`)
+  - pass: the status struct includes an `observedGeneration int64` field with a `+optional` marker
+  - not-observed: no status struct in scope
 
 ### 2. API Versioning
 
-- API versioning often follows a maturation path such as `v1alpha1` → `v1beta1` → `v1`, but not every API needs every stage. Review whether version naming, stability expectations, and migration semantics are clear and consistent
-- For multi-version CRDs, `served`, `storage`, and deprecation semantics are intentional and documented
-- Deprecated versions have a clear migration path and are not left served indefinitely without justification
-- Multi-version CRDs use an appropriate conversion strategy. Use a conversion webhook when schema or semantic differences require it; do not assume every multi-version CRD needs a webhook
-- Conversions preserve semantic meaning across versions and avoid silent data loss on round-trip conversion
-- Validation and defaulting changes across versions are compatibility-safe: avoid tightening validation, changing defaults, or dropping fields in ways that break existing stored objects or upgrades
-- Favor additive schema evolution where possible. Treat breaking field renames, enum changes, or required-field additions as high-risk unless there is an explicit migration or compatibility strategy
-- `+kubebuilder:storageversion` marker is present on exactly one version when multiple API versions coexist (`must`). For single-version CRDs the marker is recommended but its absence is not an error (`contextual`).
+- **2a. Multi-version CRDs have one explicit storage version**
+  - title: "Multi-version CRD missing explicit storage version"
+  - finding: a CRD serves multiple versions but does not mark exactly one as the storage version (`Critical`)
+  - pass: exactly one version is marked as storage version, or only one version exists
+  - not-observed: no multi-version CRDs in scope
 
-### 3. Webhooks (if present)
+- **2b. Served and deprecated versions are intentional**
+  - title: "Unintentional version serving configuration"
+  - finding: a version is served or deprecated without clear intent (e.g., a deprecated version is still marked served with no migration note) (`Major`)
+  - pass: served and deprecated flags are consistent and intentional
+  - not-observed: no multi-version CRDs in scope
 
-Skip this area entirely if the project has no admission webhooks. Only assess when webhook configurations or webhook handler code exist.
+- **2c. Conversion strategy matches schema differences**
+  - title: "Conversion strategy mismatches schema differences"
+  - finding: versions have schema differences but the CRD uses `None` conversion strategy, or a webhook conversion is configured but schemas are identical (`Critical`)
+  - pass: conversion strategy is appropriate for the schema differences between versions
+  - not-observed: no multi-version CRDs in scope
 
-- Defaulting webhook sets sensible defaults
-- Validating webhook rejects invalid input
-- Failure policy is explicitly set (`Fail` or `Ignore`) based on criticality
-- `sideEffects` is declared (typically `None`)
-- `timeoutSeconds` is explicitly set and kept small enough to avoid stalling admission
-- `admissionReviewVersions` is current and compatible with the target clusters
-- `matchPolicy`, rules, and any namespace or object selectors are intentional and do not accidentally bypass required admission coverage
-- Webhook scope is tight: only the intended groups, versions, resources, and operations are intercepted
-- Dry-run behavior is consistent with the declared `sideEffects`
-- Avoid long-running logic or external dependencies on the admission path unless they are clearly necessary and failure-tolerant
-- For simple validation logic, consider whether `ValidatingAdmissionPolicy` is a better fit than a validating webhook. Treat this as a recommendation (`should`/`contextual`), not a blocker
-- Prefer `ValidatingAdmissionPolicy` for declarative, object-local validation rules; reserve validating webhooks for logic that needs custom code, cross-object awareness, mutation/defaulting, or behavior not expressible cleanly in policy/CEL
-- Webhook certificate rotation is handled
+- **2d. Version evolution is additive**
+  - title: "Non-additive version evolution without migration"
+  - finding: a new version removes or renames fields from a prior version without a documented migration path (`Major`)
+  - pass: version evolution is additive, or a migration path is documented
+  - not-observed: no version evolution evidence in scope
 
-### 4. CRD Generation and Marker Correctness
+### 3. Webhooks
 
-- Consider explicitly marking fields with kubebuilder/controller-gen validation markers such as `+kubebuilder:validation:Required` and `+optional` to avoid ambiguity
-- Be aware that zero values pass required field validation (OpenAPI checks non-null only) — use `MinLength`, `Minimum` markers when meaningful
-- Inspect generated CRD manifests — controller-gen may silently ignore unrecognized markers:
-  - Check for typos in `+kubebuilder:` markers by comparing against the known set (`validation`, `default`, `printcolumn`, `rbac`, `object`, `subresource`, etc.) — any unrecognized marker is silently dropped
-  - Verify marker/field type alignment — e.g., `+kubebuilder:validation:Minimum=1` on a string field produces no validation in the generated CRD
-  - Check `+kubebuilder:validation:Enum` values match the corresponding const block defining valid values
-- Review CEL validation (`+kubebuilder:validation:XValidation` / `x-kubernetes-validations`) when cross-field invariants, conditional requirements, or immutability rules exist
-- Prefer CEL for declarative validation that is local to the object; keep validating webhooks for cases that need external lookups, mutation, or more complex programmatic checks
-- Verify CEL rules remain compatible with version evolution and do not unintentionally reject older persisted objects after schema changes
-- Watch out for nested defaulting: when a nested struct field has `+kubebuilder:default:` markers, the parent field must have `+kubebuilder:default:{}` or the nested defaults are never applied
-- Verify `+kubebuilder:object:root=true` is present on root types and that generated deepcopy files (`zz_generated.deepcopy.go`) are not stale relative to current type definitions
-- Always review generated output rather than trusting markers blindly
+Skip this area if no admission webhook assets exist in scope.
 
-## Assessment Procedure
+- **3a. Failure policy is explicit**
+  - title: "Webhook failure policy not explicit"
+  - finding: a webhook configuration omits `failurePolicy`, relying on the server default (`Major`)
+  - pass: `failurePolicy` is explicitly set on all webhook configurations
+  - not-observed: no webhook configurations in scope
 
-Use this repeatable workflow:
+- **3b. sideEffects is explicit**
+  - title: "Webhook sideEffects not explicit"
+  - finding: a webhook configuration omits `sideEffects`, relying on the server default (`Major`)
+  - pass: `sideEffects` is explicitly set on all webhook configurations
+  - not-observed: no webhook configurations in scope
 
-1. Determine scope from `$ARGUMENTS`, git diff, or targeted API type packages.
-   - If `$ARGUMENTS` points to a GitHub repository, prioritize `api/`, `config/crd/`, and webhook directories as initial evidence sources.
-2. If no Kubernetes APIs/CRDs are present in scope, stop and return `Not applicable`.
-3. Collect evidence first (specific files and call sites), then classify issues by impact.
-4. Mark each finding as `must`, `should`, or `contextual` based on production risk.
-5. Map internal labels to report severities:
-   - `must` -> `Critical`
-   - `should` -> `Major`
-   - `contextual` -> `Minor`
-6. If generated CRD manifests are unavailable in scope (or `controller-gen` cannot be executed), perform static marker/source review and mark generated-manifest checks as `Not verified` with reduced confidence.
-7. **Adversarial validation**: Launch a clean-context validator subagent with the draft findings, draft highlights, and scope. See [Leaf Validator Subagent](#leaf-validator-subagent) for the validator brief and isolation rules.
-8. Apply validation results: update severities, remove dismissed findings, adjust or remove highlights per validator verdicts. Validation **always runs** and its results are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
-9. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
+- **3c. timeoutSeconds is explicit**
+  - title: "Webhook timeoutSeconds not explicit"
+  - finding: a webhook configuration omits `timeoutSeconds`, relying on the server default (`Minor`)
+  - pass: `timeoutSeconds` is explicitly set on all webhook configurations
+  - not-observed: no webhook configurations in scope
 
-## Leaf Validator Subagent
+- **3d. Webhook match scope is narrow**
+  - title: "Webhook match scope too broad"
+  - finding: a webhook matches more resources or namespaces than the controller manages (`Major`)
+  - pass: webhook match rules are scoped to the resources and namespaces the controller owns
+  - not-observed: no webhook configurations in scope
 
-After the primary analysis produces draft findings and draft highlights, launch a **separate subagent** to adversarially validate the results. The validator operates with a clean context — it does not receive the primary reviewer's reasoning or intermediate notes.
+- **3e. No long-running or externally dependent admission logic**
+  - title: "Long-running or externally dependent admission logic"
+  - finding: admission webhook handler performs long-running operations or calls external services that can block API server requests (`Major`)
+  - pass: admission logic is fast and self-contained
+  - not-observed: no webhook handler implementations in scope
 
-### Isolation rules
+### 4. Marker and Generated Output Correctness
 
-- Run in a separate subagent
-- Receive only: the scope (from `$ARGUMENTS` or resolved defaults), draft findings, and draft highlights
-- Re-read code independently from the evidence locations in each finding's `where` field
-- Do not rely on the primary reviewer's internal reasoning
+- **4a. Marker names are valid and spelled correctly**
+  - title: "Invalid or misspelled marker name"
+  - finding: a kubebuilder marker name is invalid, misspelled, or not recognized by controller-gen (`Critical`)
+  - pass: all marker names are valid and correctly spelled
+  - not-observed: no kubebuilder markers in scope
 
-### Validator brief
+- **4b. Marker type usage matches field types**
+  - title: "Marker type mismatch with field type"
+  - finding: a validation marker is applied to a field type it does not support (e.g., `+kubebuilder:validation:Minimum` on a string field) (`Major`)
+  - pass: all marker types are compatible with their field types
+  - not-observed: no validation markers in scope
 
-> **Role**: You are a skeptical reviewer. Your job is to challenge each finding from an API conventions assessment and determine whether it actually impacts runtime behavior, correctness, or operational safety. You also verify that positive highlights do not contradict the findings.
->
-> **Inputs you receive**:
-> - The draft findings list (each following the canonical finding model from `validation-output-schema.md`)
-> - The draft positive highlights list (each with: `id`, `sourceSkill`, `description`). For this leaf skill, `sourceSkill` is always `k8s.controller-api`
-> - The scope so you can read the same code
->
-> **Your task**:
->
-> **Part 1 — Validate findings:**
-> For each finding, independently read the code at the referenced location and evaluate:
-> 1. **Is the finding accurate?** Does the code actually exhibit the described problem?
-> 2. **Does it affect behavior?** Would fixing this change runtime behavior, correctness, or operational safety — or is it purely stylistic / cosmetic / theoretical?
-> 3. **Is the severity appropriate?** A pattern that looks non-ideal but cannot cause incorrect behavior, data loss, or operational failure should be downgraded.
->
-> **Part 2 — Validate highlights against findings:**
-> For each positive highlight, check whether it contradicts any finding:
-> - A highlight must not praise a pattern that is also flagged as a finding.
-> - If a highlight praises a pattern whose absence is flagged as a finding anywhere in the report, mark the highlight for removal or rewording.
-> - If the same concept is used correctly in some code paths and incorrectly in others, the correct usage is not a highlight — only the incorrect usage should appear (as a finding).
-> - Highlights that do not conflict with any finding should be kept as-is.
->
-> **Downgrade rules** (findings only):
-> - A finding that is factually correct but has **no behavioral impact** → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)
-> - A finding where the described problem **cannot occur** given the surrounding code → dismiss entirely
-> - A finding where the severity is appropriate and the behavioral impact is real → keep as-is
->
-> **Output schema**:
->
-> Finding validations (one entry per finding):
-> ```
-> findingId: <id matching the draft findings list>
-> originalSeverity: critical / major / minor
-> validatedSeverity: critical / major / minor / dismissed
-> verdict: confirmed / downgraded / dismissed
-> reason: <1-2 sentences explaining why — reference specific code evidence>
-> validationLayer: leaf
-> ```
->
-> Highlight validations (one entry per highlight that needs adjustment):
-> ```
-> highlightId: <id matching the draft highlights list>
-> verdict: keep / remove / reword
-> reason: <1-2 sentences explaining the contradiction with a specific finding>
-> suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
-> ```
->
-> **Verdict vocabulary**: Leaf validators use `confirmed`, `downgraded`, or `dismissed`. The orchestrator validator uses `confirmed`, `adjusted`, or `dismissed` instead, because it operates on already-validated findings and makes cross-skill adjustments rather than per-finding accuracy checks.
->
-> Do **not** produce new findings. Your role is to validate, not to review.
+- **4c. Enum marker values match declared constants**
+  - title: "Enum marker values do not match declared constants"
+  - finding: `+kubebuilder:validation:Enum` values do not match the declared Go constants for the type (`Major`)
+  - pass: enum marker values match declared constants
+  - not-observed: no enum markers in scope
 
-### Applying validation results
+- **4d. Nested defaults are reachable**
+  - title: "Unreachable nested default value"
+  - finding: a `+kubebuilder:default` marker on a nested field is unreachable because a parent field lacks a default or is optional without a default (`Major`)
+  - pass: all nested defaults are reachable through parent defaults or required fields
+  - not-observed: no nested default markers in scope
 
-1. Update each finding's severity to the `validatedSeverity`.
-2. Remove any finding with `validatedSeverity: dismissed`.
-3. Remove any highlight with `verdict: remove`.
-4. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
-5. Keep downgrade and dismissal rationale for the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
-6. Recompute severity counts using the validated severities.
+- **4e. Root markers are present on root types**
+  - title: "Missing root markers on root types"
+  - finding: a root type (the type that becomes a CRD) is missing `+kubebuilder:object:root=true` or equivalent root marker (`Major`)
+  - pass: all root types have root markers
+  - not-observed: no root types in scope
+
+- **4f. Generated CRD output matches committed manifests**
+  - title: "Generated CRD output differs from committed manifest"
+  - finding: the committed CRD manifest does not match what the current markers and types would generate (`Major`)
+  - pass: committed CRD manifests are consistent with the current type definitions and markers
+  - not-observed: no committed CRD manifests in scope
+
+## Deterministic Procedure
+
+Run the assessment in this exact order:
+
+1. Resolve scope from explicit scope text or `$ARGUMENTS`.
+2. Run the static analyzer with `--skill api`. Load the full JSON output into context.
+3. If `manifest.count` is 0, return `Not applicable`.
+4. Run the gopls verification protocol for checklist areas 1, 2, 3, and 4 as specified above.
+5. Walk every checklist item (1a through 4f) in order. For each item, record a disposition: `finding`, `pass`, or `not-observed` using the criteria defined above, the analyzer facts, and gopls verification results. Do not skip items.
+6. Draft findings only from items with `finding` disposition. Every finding must trace to a specific checklist item ID (e.g., "1d"). Observations outside the checklist may appear in a `Notes` section but do not receive an ID, severity, or score impact.
+7. Run one deterministic leaf validation pass in the same session:
+   - dismiss findings unsupported by cited evidence
+   - dismiss any anti-finding violations
+   - lower severity only when the written criteria support the lower level
+   - remove or reword highlights that contradict findings
+8. Sort findings using the shared schema rules. Assign final IDs after sorting.
+9. Compute score and severity counts.
+
+Use area names exactly as written in the section headings above.
+
+In deterministic mode do not:
+
+- default to `git diff`
+- expand scope beyond what the evidence manifest discovered
+- launch subagents
+- run `controller-gen` or other code generators
+- use ad-hoc `sg` (ast-grep) queries for facts the analyzer already provides
+- skip gopls verification steps defined in the protocol
+
+`--mode=exploratory` may widen scope after the manifest and may run additional searches, but the report format and scoring stay the same.
+
+## Severity Mapping
+
+Severity for each checklist item is defined inline in the assessment areas above. When evidence fits two adjacent levels and the criteria do not force the higher level, choose the lower level.
 
 ## Scoring
 
 1. Start at 100.
-2. For each finding, subtract points based on severity:
-   - Critical: **-20** per finding
-   - Major: **-10** per finding
-   - Minor: **-3** per finding
+2. Subtract:
+   - `Critical`: 20
+   - `Major`: 10
+   - `Minor`: 3
 3. Floor score at 0.
+4. Show arithmetic in the report.
 
 Interpretation:
 
-- **90-100**: Production-ready with minor polish
-- **75-89**: Solid baseline, a few important gaps
-- **50-74**: Significant issues to address before production
-- **<50**: High operational risk; major redesign/fixes recommended
+- `90-100`: Production-ready with minor polish
+- `75-89`: Solid baseline, a few important gaps
+- `50-74`: Significant issues to address before production
+- `<50`: High operational risk; major redesign or fixes recommended
 
 ## Output Format
 
-Produce the assessment in this format. All sections are always included unless noted otherwise.
-Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md).
+Produce the assessment using the canonical model from [validation-output-schema.md](../../references/validation-output-schema.md).
 
 Output conventions:
 
-- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `api://group/version/Kind`)
-- `where` should use repo-relative GitHub-style location string(s) (for example, `api/v1alpha1/myresource_types.go#L42-L49`)
-- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
+- `scope` should use a URI-like string such as `repo://org/repo`, `dir://api`, or `api://group/version/Kind`
+- `where` should use repo-relative GitHub-style location strings
+- Sort findings by severity, area, `where`, and title before assigning final IDs
+
+### Evidence Manifest
+
+Paste the `manifest` section from the analyzer JSON output, including `count`, `hash`, and the categorized file entries. Do not edit, reformat, or summarize the output. This section makes the report auditable and verifiable.
 
 ### Summary
 
-2-3 sentences describing the API design quality and conventions compliance.
+Write 2-3 sentences describing API quality and conventions compliance.
 
 Score table:
 
 | Metric | Value |
 |--------|-------|
-| **Score** | 0-100 (or `Not applicable`) |
-| **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
+| **Score** | 0-100 or `Not applicable` |
+| **Interpretation** | Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
 
 Severity count table:
 
@@ -224,47 +363,34 @@ Severity count table:
 | Major | _n_ |
 | Minor | _n_ |
 
-Findings summary table (one row per finding, sorted by severity then by area):
+Findings summary table (use the checklist `title` in the What column):
 
 | # | Severity | Area | What | Where | Confidence |
 |---|----------|------|------|-------|------------|
 
-- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
+### Findings
 
-### Findings (only with `--details`)
+For each finding, use the canonical text from the checklist item:
 
-This section is only included when the `--details` flag is passed.
+- **Title**: use the `title` from the checklist item verbatim
+- **What**: use the `finding` text from the checklist item verbatim
+- **Checklist item**: the item ID (e.g., 1d)
+- **Severity**: from the checklist item
+- **Area**: exact section heading
+- **Where**: repo-relative paths with line ranges from the evidence
+- **Confidence**: `High` if all `where` entries have line ranges, `Medium` if any are path-only, `Low` if no `where` references
+- **Not verified**: assumptions or checks not performed
+- **Why**: explain how the specific code triggers this checklist criterion — reference the actual function names, variables, and control flow found in the evidence
+- **Fix**: concrete suggested change using the specific types and patterns from the codebase
 
-For each finding (numbered to match the summary table), produce:
+### Validation
 
-#### _N_. _Finding title_
+Include this section when one or more findings or highlights changed during the deterministic second pass. Otherwise render "No adjustments."
 
-| | |
-|---|---|
-| **Severity** | Critical / Major / Minor |
-| **Area** | Assessment area name |
-| **Where** | GitHub-style location string(s) |
-| **Confidence** | High / Medium / Low |
-| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
+### Highlights
 
-**Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
+Include only positive highlights that do not contradict any finding.
 
-**Fix**: Concrete suggested change.
+### Notes
 
----
-
-### Validation (only with `--details`)
-
-**Do NOT include this section unless `--details` is passed.** When `--details` is active and the validation phase produced changes, list each downgraded or dismissed finding:
-
-| # | Original Severity | Validated Severity | Verdict | Reason |
-|---|-------------------|--------------------|---------|--------|
-
-Highlight validation changes (only when one or more highlights were removed or reworded):
-
-| Highlight | Verdict | Reason | Suggested Rewording |
-|-----------|---------|--------|---------------------|
-
-### Positive Highlights
-
-Things the API design does well, patterns worth preserving or replicating.
+Optional. Observations outside the checklist that may be useful but do not receive IDs, severity, or score impact.

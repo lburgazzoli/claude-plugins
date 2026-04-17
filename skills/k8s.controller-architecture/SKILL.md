@@ -1,364 +1,456 @@
 ---
 name: k8s.controller-architecture
-description: Assess, review, or audit a Kubernetes controller architecture for upstream conventions, kubebuilder best practices, and correctness.
+description: Assess a Kubernetes controller architecture for upstream conventions, kubebuilder practices, and correctness.
 ---
 
 # Kubernetes Controller Architecture Assessment
 
-Perform a comprehensive architecture assessment of a Kubernetes controller implementation.
-This skill is primarily designed for Go controllers built with `controller-runtime`/kubebuilder patterns.
-
-## Inputs
-
-- If `$ARGUMENTS` is provided, treat it as scope (files, package, controller name, assessment focus, or GitHub repository).
-- GitHub repository inputs may be full URLs (for example, `https://github.com/org/repo`) or shorthand (`org/repo`).
-- If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source and do not apply local `git diff` defaults.
-- If no arguments are provided, assess current repository changes from git diff.
-- If there are no changes, start with controller packages and API types first; expand to the full codebase only when needed for evidence.
-- If the project has no controller/operator implementation assets in scope (for example, no controller reconciler code and no relevant controller/runtime manifests), skip this skill and report `Not applicable`.
-- `--details` includes a full breakdown of each finding (Why, Fix, metadata) after the summary tables. Without this flag, only the summary tables are produced.
-
-## Input Validation
-
-The only recognized flag is `--details`. If `$ARGUMENTS` contains any unrecognized `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
-When this skill is invoked by `/k8s.controller-assessment`, it should receive only scope text and optional `--details` (orchestration flags such as `--scope` are not valid here).
+Assess the controller architecture of a Kubernetes operator or controller implementation.
+This skill is primarily designed for Go controllers built with `controller-runtime` and kubebuilder patterns.
 
 ## References
 
-Consult [k8s-upstream.md](../../references/k8s-upstream.md) for the authoritative source of conventions and high-quality reference implementations.
-Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical finding, evidence, highlight, and validation model used by validation-style skills.
+Consult [k8s-upstream.md](../../references/k8s-upstream.md) for upstream conventions.
+Consult [analyzer-output-schema.md](../../references/analyzer-output-schema.md) for the analyzer JSON input contract.
+Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report model.
+Consult [reproducible-assessments.md](../../references/reproducible-assessments.md) for deterministic execution rules.
+
+## Inputs
+
+- `$ARGUMENTS` may contain:
+  - scope text such as files, packages, controller names, or GitHub repositories
+  - `--mode=deterministic`
+  - `--mode=exploratory`
+- Default mode is `--mode=deterministic`.
+- If `$ARGUMENTS` is a GitHub repository, use that repository as the primary scope source.
+- If no controller implementation assets or controller-runtime manifests are found in the resolved scope, return `Not applicable`.
+
+## Input Validation
+
+- The only recognized flags are `--mode=deterministic` and `--mode=exploratory`.
+- If `$ARGUMENTS` contains any other `--<flag>`, stop before running the assessment and ask the user to confirm whether the flag is intentional or a typo.
+
+## Static Analyzer
+
+In deterministic mode, build and run the static analyzer to extract structured facts from Go code and YAML manifests. This is the single evidence source — it replaces manual file discovery, ast-grep queries, and YAML file reading.
+
+Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads.
+
+### Run
+
+```bash
+<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --skill architecture --format json
+```
+
+If the orchestrator (`k8s.controller-assessment`) has already run the analyzer and the JSON is loaded in context, skip the run step.
+
+### Load and use
+
+Load the full JSON output into context. The output includes:
+
+- A `manifest` section with `count`, `hash` (MANIFEST_HASH), and categorized file `entries` — include `manifest.hash` verbatim in the report for auditability
+- A `facts` array with all extracted evidence
+
+If `manifest.count` is 0, return `Not applicable`.
+
+This is the **primary evidence source** for all analysis. The output contains facts with these kinds:
+
+- `controller` — reconciler structs, RBAC markers, API calls, finalizer/owner-ref ops, status conditions (with ObservedGeneration), status update sites (with retry guard detection), retry ops, library invocation sites, event usages, not-found handlers, predicate usages, requeue ops, error returns, owns/watches
+- `crd_version` — CRD version storage/hub/spoke info
+- `import_analysis` — vendor imports, library imports, unstructured logging, metrics
+- `scheme_registration` — scheme registrations in main/cmd
+- `rbac_manifest` — Role/ClusterRole YAML: rules, wildcards, event permissions
+- `crd_manifest` — CRD YAML: versions, conversion strategy, scope
+
+Do not re-derive facts that the analyzer already provides. Do not use `sg` (ast-grep) queries for patterns the analyzer extracts. The analyzer uses `go/packages` for accurate AST parsing — it is more reliable than syntax-only pattern matching.
+
+### Fact-to-checklist mapping
+
+| Analyzer Facts | Checklist Items |
+|----------------|-----------------|
+| `controller.rbac_markers` + `controller.api_calls` + `rbac_manifest` | 3a-d (RBAC) |
+| `controller.error_returns` + `controller.requeue_ops` | 2a-c (Error handling) |
+| `controller.finalizer_ops` + `controller.owner_ref_ops` + `controller.external_write_ops` | 5a-c (Finalizers) |
+| `controller.status_condition_sets` + `controller.status_update_sites` + `controller.retry_ops` | 4a-d (Status) |
+| `controller.owns` + `controller.watches` + `controller.predicate_usages` | 8a-b (Watches) |
+| `controller.api_calls` + `controller.not_found_handlers` + `controller.external_write_ops` | 1a-c (Idempotency) |
+| `controller.library_invocations` | 7d-e (Rendering/caching) |
+| `import_analysis.vendor_imports` | 6a-b (Vendor isolation) |
+| `scheme_registration` | Informational for 9a-b |
+
+For RBAC checklist items, reason in this order:
+
+1. Treat `rbac_manifest` as the primary evidence for effective committed permissions.
+2. Use `controller.api_calls` to determine what permissions the controller actually needs.
+3. Use `controller.rbac_markers` as secondary evidence for drift checks between source markers and generated/committed RBAC.
 
 ## Assessment Areas
 
-### 1. Reconciliation Idempotency and State Handling
+Use area names exactly as written in the section headings below.
 
-- Each controller should ideally have a clear responsibility with understandable inputs and outputs. Treat this as a strong default rather than a universal rule; broader controllers can still be valid when their boundaries are intentional and operationally coherent
-- Prefer a consistent reconcile structure such as: fetch resource, handle finalization, initialize conditions, reconcile, patch status. Patterns used by projects such as Knative and [cluster-api](https://github.com/kubernetes-sigs/cluster-api) are useful references, but review for internal consistency rather than strict adherence to one framework-specific shape
-- Reconcile function produces the same result regardless of how many times it runs for the same input state
-- State is reconstructed from observed state, not cached or assumed from previous reconciliation
-- No side effects on no-op reconciliations (no unnecessary updates, patches, or event emissions)
-- Labels and annotations must not be blindly propagated from parent resources to child templates (e.g., from a CR to a Deployment's `spec.template.metadata`), as any change to the parent's labels would trigger a rolling restart of the underlying pods. If label/annotation propagation is intentional, it should use an explicit opt-in allowlist of keys to propagate, not copy-all with an opt-out denylist
-- Handles resource-not-found gracefully (deleted between queue and reconciliation)
-- Uses `apierrors.IsNotFound()` to detect deleted resources and returns nil to stop reconciliation
-- Properly handles optimistic concurrency via `resourceVersion` conflicts. Prefer returning the conflict error and letting controller-runtime requeue with backoff so the next reconcile starts from fresh state. Use `retry.RetryOnConflict` only when strictly needed for a narrowly bounded inline retry section. The absence of `RetryOnConflict` is **not** a finding when the controller returns errors normally — the requeue loop inherently resolves conflicts. Only flag conflict handling when there is evidence of **silent data loss**, **swallowed conflict errors**, or **writes on knowingly stale objects without returning the error**
+### Category A: Correctness, Lifecycle, and Security
 
-### 2. Error Handling and Requeue Strategy
+#### 1. Reconciliation Idempotency and State Handling
 
-- Distinguishes between recoverable (transient) and non-recoverable (permanent) errors
-- Transient errors (API server unavailable, conflict) return error to trigger exponential backoff requeue
-- For permanent or non-recoverable errors, use `reconcile.TerminalError(err)` to signal that the request should not be requeued. This is the canonical way to stop retries for errors that will never succeed (e.g., invalid spec that requires user intervention). Complement this by surfacing the problem in status conditions so users can observe and act on it
-- For user-fixable or long-lived spec issues (for example, invalid spec or missing referenced resources), prefer surfacing the problem in status conditions and avoid hot-looping on repeated errors. Returning an error can still be appropriate when it materially improves retry behavior or observability
-- Uses `ctrl.Result{RequeueAfter: duration}` for time-based scheduling instead of polling loops
-- Uses `ctrl.Result{}` with nil error for graceful stop (no unnecessary requeue)
-- `Requeue: true` is deprecated since controller-runtime v0.20 (PR #3107). It misuses the error-retry rate limiter for a non-error purpose. Return errors directly for failures, or use `RequeueAfter` with an explicit duration for in-progress polling. If found in existing code, flag as informational — it still works but should be migrated
-- Conflict handling is contextual. Many controller-runtime reconcilers correctly handle optimistic concurrency by returning patch or update errors and relying on the next reconcile to re-fetch fresh state. **This is the default valid pattern** — do not flag the absence of `RetryOnConflict` as a finding when the controller propagates conflict errors normally
-- Treat `retry.RetryOnConflict` (`k8s.io/client-go/util/retry`) as an exception pattern, not a default. Prefer returning the conflict error and letting the next reconcile start from fresh state
-- Use `retry.RetryOnConflict` only when strictly needed for a narrowly bounded read-modify-write section where immediate local retry is materially better than reconcile-level retry
-- Define "strictly needed" as: a narrow, side-effect-free read-modify-write section where immediate local retry materially reduces risk or churn compared with exiting reconcile and requeueing
-- Example strict-need cases from upstream projects:
-  - finalizer removal during concurrent deletion races where multiple controllers contend on the same object (cluster-api)
-  - ConfigMap updates in remote clusters where reconcile-level retry would re-run expensive cross-cluster operations (cluster-api kubeadm)
-  - narrow resource updates where expensive preceding computation (e.g., metrics collection in HPA) should not be re-run for a cheap write
-- Non-example: wrapping broad reconcile flow (especially with external calls, child resource creation, or multi-step mutations) in `RetryOnConflict`; in those cases, return the conflict error and let the next reconcile start from fresh state
-- Non-example: status subresource updates — no major upstream project uses `RetryOnConflict` for status updates; they rely on the reconcile loop or batched patch patterns instead
-- When in doubt, do not use `RetryOnConflict`
-- Whenever `retry.RetryOnConflict` is used, require all safeguards:
-  - re-fetch inside the retry closure before mutation
-  - merge only controller-owned fields (never wholesale replacement)
-  - avoid side effects inside the retry loop
-  - avoid decisions from stale assumptions across retries
-  - preserve reconcile-entry generation semantics for `observedGeneration` (see Area 5)
-- If `RetryOnConflict` is used despite the above guidance, verify the safeguards above are met. [cluster-api-operator](https://github.com/kubernetes-sigs/cluster-api-operator) is one reference for how to structure retry closures that re-fetch and merge only owned fields. However, note that even well-structured projects are moving away from this pattern in favor of reconcile-loop retry or SSA
-- Never praise `RetryOnConflict` as a positive highlight — at best it is a neutral implementation choice that requires scrutiny
-- Review whether the controller's chosen pattern is coherent with its write style:
-  - controllers that accumulate changes in memory and write them back with a single patch near the end of reconcile often return the conflict error and let the next reconcile fetch fresh state instead of retrying inline (for example, the common Cluster API-style deferred patch pattern)
-  - SSA-based writes with `force: true` (recommended for controllers) effectively eliminate classic `resourceVersion` conflicts by transforming them into meaningful field-ownership conflicts. This removes the primary motivation for `RetryOnConflict` in status updates. SSA-based status patches (`r.Status().Patch()` with `client.Apply`) handle field ownership natively and do not need retry wrappers
-  - explicit `RetryOnConflict` loops should be rare and must satisfy the strict-use and safeguard rules above
-- Classify this area as `contextual` (Minor) unless there is evidence of lost updates, stale-state decisions, or hot-looping
-- Never silently swallows errors — either returns them, logs them, or records them in status
-- Wraps errors with `fmt.Errorf("context: %w", err)` for debuggable error chains
+- **1a. Reconcile logic is idempotent**
+  - title: "Non-idempotent reconcile path"
+  - finding: a reconcile path creates, updates, or deletes resources unconditionally without checking current state (`Major`)
+  - pass: reconcile paths check current state before writes (create-or-update, SSA, or equivalent)
+  - not-observed: no resource writes in scope
 
-### 3. Resource Management and API Efficiency
+- **1b. No-op reconciles avoid unnecessary writes**
+  - title: "No-op reconciles trigger unnecessary writes"
+  - finding: every reconcile triggers writes even when the resource is already at desired state (`Minor`)
+  - pass: reconcile short-circuits or skips writes when nothing changed
+  - not-observed: cannot determine from code whether writes occur on no-ops
 
-- Minimizes API server calls: uses cached client for reads, direct client only when strong consistency is needed
-- Uses field indexers (`mgr.GetFieldIndexer().IndexField()`) for efficient filtered list operations
-- Batches related operations where possible
-- Avoids unnecessary status updates (compares before updating); avoids expensive operations (external API calls, status updates) on every reconciliation when nothing changed — use `status.observedGeneration` to detect if actual work is needed
-- Uses Server-Side Apply (SSA) where appropriate with descriptive `fieldManager` names
-- When using SSA: includes all managed fields in each Apply, omits unmanaged fields, handles conflicts gracefully
-- Does not manually edit `.metadata.managedFields`
+- **1c. Not-found objects are handled gracefully**
+  - title: "Not-found error not handled gracefully"
+  - finding: a not-found error causes a requeue or error log instead of a clean return (`Major`)
+  - pass: `IsNotFound` or equivalent check returns `ctrl.Result{}, nil`
+  - not-observed: no Get/read calls in reconcile scope
 
-### 4. RBAC Least Privilege and Security
+- **1d. RetryOnConflict absence**
+  - Anti-finding: do not create a finding for the mere absence of `RetryOnConflict`. Do not list `RetryOnConflict` as a positive highlight.
 
-- RBAC markers (`//+kubebuilder:rbac`) grant minimum required permissions
-- No wildcard verbs or resource grants (`*` on verbs or resources)
-- Status subresource has separate RBAC from the main resource (`status` subresource permission)
-- Event recording permissions are declared if events are emitted
-- No cluster-scoped permissions when namespace-scoped suffices
-- Secrets access is scoped to specific secrets if possible, not blanket access
-- RBAC markers match actual API calls in the code (no stale or missing markers)
-- **Meta-operators** (operators that manage other operators, e.g., cluster-api-operator, OLM): broader RBAC is expected because the operator must manage resources of its sub-operators. When a meta-operator is detected, verify that permission boundaries match the actual sub-operator manifests being managed, in addition to the operator's own resources — do not flag these broader permissions as least-privilege violations
+#### 2. Error Handling and Requeue Strategy
 
-### 5. Status, Conditions, and Observed Generation
+- **2a. Transient errors return for requeue with backoff**
+  - title: "Transient errors swallowed, preventing requeue"
+  - finding: transient errors are swallowed (logged but not returned) preventing requeue (`Major`)
+  - pass: transient errors are returned so the controller requeues with backoff
+  - not-observed: no error paths in scope
 
-- Status is updated via the status subresource (`r.Status().Update()` or `r.Status().Patch()`)
-- Consider Server-Side Apply for status updates (`r.Status().Patch()` with `client.Apply`) when multiple actors may contribute to status and field ownership needs to stay explicit. In single-controller cases this can still be a good fit, but treat it as a design choice rather than a universal upgrade over ordinary status patch/update flows
-- Resource is re-fetched before status update to avoid "object has been modified" conflicts
-- `status.observedGeneration` should be set to `.metadata.generation` captured at the start of the reconcile to indicate which spec version the status reflects. Without this field, consumers cannot determine whether the status is current or stale. The same rule applies to condition-level `observedGeneration`
-- For status updates, do not use `retry.RetryOnConflict`. No major upstream project uses it for status subresource updates. The validated patterns are: (1) return the conflict error and let the next reconcile re-fetch fresh state, (2) use a batched deferred-patch approach (e.g., Cluster API's `PatchHelper`), or (3) use SSA status patches which handle field ownership natively
-- If `RetryOnConflict` is found around status updates in existing code, verify that the retry closure does not wholesale-replace `latest.Status` with an in-memory copy built before the retry — a full replacement silently overwrites status fields set by other actors between the original fetch and the retry. Recommend migrating to one of the validated patterns above
-- When using `retry.RetryOnConflict`, `status.observedGeneration` (and condition-level `observedGeneration`) must be set to the generation captured at the start of the reconcile — not to the re-fetched object's `.metadata.generation` inside the retry closure. A re-fetch may return a newer generation if the spec was updated between retries; using that value falsely claims the controller has reconciled a spec it never processed. If the status lacks `observedGeneration` entirely and the controller uses `RetryOnConflict`, flag it as `should` (Major): without this field, consumers cannot determine whether the status reflects the current spec or a stale one, and the retry loop compounds the risk by potentially writing status against a spec version the controller never processed. Classify as `must` (Critical) when combined with wholesale status replacement
-- Uses standard condition types following Kubernetes conventions:
-  - `type`: PascalCase (e.g., `Ready`, `Available`, `Degraded`, `Progressing`)
-  - `status`: `True`, `False`, or `Unknown`
-  - `reason`: one-word CamelCase describing why the condition is set
-  - `message`: human-readable details
-  - `lastTransitionTime`: updated only when `status` changes
-  - `observedGeneration`: set to `.metadata.generation` captured at reconcile entry to indicate which spec version the condition reflects — never from a re-fetched object inside a retry loop
-- Conditions are set on first visit, even with `Unknown` status
-- Uses `meta.SetStatusCondition()` or equivalent for proper condition management
-- OpenShift operators: reports `Available`, `Progressing`, `Degraded` conditions on ClusterOperator
+- **2b. Time-based scheduling uses RequeueAfter**
+  - title: "Polling without RequeueAfter duration"
+  - finding: polling uses `Requeue: true` without a duration, causing tight-loop reconciliation (`Minor`)
+  - pass: time-based scheduling uses `RequeueAfter` with an explicit duration
+  - not-observed: no time-based scheduling in scope
 
-### 6. Ownership, Finalizers, and Cleanup Logic
+- **2c. Permanent errors are surfaced coherently**
+  - title: "Permanent errors cause infinite requeue"
+  - finding: permanent errors are returned for infinite requeue without a terminal condition or status update (`Major`)
+  - pass: permanent errors update status conditions or use an explicit terminal path
+  - not-observed: no permanent error paths in scope
 
-- Uses `ctrl.SetControllerReference()` for ownership, letting garbage collector handle cleanup
-- Declares `.Owns()` in controller setup for automatic watch on owned resources
-- Set `ReaderFailOnMissingInformer: true` on the manager to prevent hidden on-the-fly informer creation from undeclared resource queries (see also Area 8 for cache alignment implications)
-- Owner references are set on child resources for automatic garbage collection
-- Does not set cross-namespace owner references (not supported)
-- Finalizers are used when deletion must be gated on cleanup, ordered teardown, or asynchronous work completion. Cleanup of external resources is the most common case, but not the only legitimate one
-- If child resources are fully Kubernetes-native and owner references are sufficient, a finalizer may be unnecessary. Treat this as a design choice to evaluate, not a blanket anti-pattern
-- When a finalizer is needed, it is added early (before creating external resources) and removed only after cleanup succeeds
-- Finalizer name follows convention: `<group>/<finalizer-name>` (e.g., `mygroup.example.com/cleanup`)
-- Cleanup logic is idempotent (safe to run multiple times)
-- Uses `controllerutil.AddFinalizer()` / `controllerutil.RemoveFinalizer()` helpers
+#### 3. RBAC Least Privilege and Security
 
-### 7. Performance and Cache Usage
+- **3a. RBAC markers match actual API calls**
+  - title: "RBAC permissions do not match actual API usage"
+  - finding: RBAC grants permissions for resources the controller never accesses, OR the controller accesses resources without corresponding RBAC (`Major`)
+  - pass: RBAC markers align with actual client calls
+  - not-observed: no RBAC markers or no client calls in scope
+  - deterministic rule: treat the two branches differently. Missing required RBAC may be reported directly from concrete controller API usage. Extra or apparently unused RBAC should only be reported when the controller's concrete resource usage is observable from code/manifests. If Helm/Kustomize rendering in the reconcile loop or generic `unstructured.Unstructured` apply paths make the concrete rendered GVK set ambiguous, do not emit a scored unused-RBAC finding from the absence of matching `api_calls` alone; use `not-observed`, or a `Low` confidence finding only when the ambiguity itself is the main point.
 
-Treat this area as workload-sensitive guidance: classify findings here as `contextual` unless you have concrete evidence of correctness or operational risk impact.
+- **3b. No wildcard RBAC**
+  - title: "Wildcard RBAC verbs or resources"
+  - finding: RBAC uses `*` for verbs or resources (`Major`)
+  - pass: all RBAC entries use explicit verbs and resource names
+  - not-observed: no RBAC markers in scope
 
-- Uses informer cache (default client) for reads; avoids direct API calls unless required
-- Watches are scoped to relevant namespaces or label selectors when possible
-- Predicates filter irrelevant events (`builder.WithPredicates()` or legacy `WithEventFilter`, `GenerationChangedPredicate`)
-- `GenerationChangedPredicate` skips reconciliation for metadata-only changes (e.g., label updates not relevant to the controller)
-- Does not block reconciliation with long-running operations (offload to jobs or async)
-- Rate limiting is configured appropriately for the controller's workload
-- Monitor reconciliation latency and queue depth; understand that periodic resyncs enqueue all objects and can create backlogs that delay processing of new events
-- Consider priority queue features (controller-runtime v0.20+) to deprioritize resync-triggered reconciliations vs edge-triggered ones
-- Consider the "expectations pattern" only when reconciliation logic creates resources and immediately lists them to decide further actions — track pending operations in-memory and wait for cache catch-up to avoid acting on stale list results (e.g., creating duplicate replicas)
-- Leader election is configured for HA deployments; tune lease duration, renew deadline, and retry period based on cluster network characteristics and failover tolerance
+- **3c. Event permissions match event usage**
+  - title: "Event RBAC does not match event usage"
+  - finding: controller emits events but lacks RBAC for events, OR has event RBAC but never emits events (`Minor`)
+  - pass: event RBAC matches actual event recorder usage
+  - not-observed: no events or event RBAC in scope
 
-### 8. Cache Consistency and Client Type Alignment
+- **3d. Cluster-scoped permissions are justified**
+  - title: "Unjustified cluster-scoped RBAC"
+  - finding: cluster-scoped RBAC (ClusterRole) grants broad access without clear need from the controller logic (`Major`)
+  - pass: cluster-scoped permissions correspond to cluster-scoped resources the controller manages
+  - not-observed: no cluster-scoped RBAC in scope
 
-Treat optimization-only findings in this area as `contextual`; escalate to `should` or `must` only when there is clear impact on correctness, scalability, or memory behavior.
+#### 4. Status, Conditions, and Observed Generation
 
-Area 7 covers performance-oriented cache tuning (scoping, predicates, rate limiting). This area covers correctness of client-type alignment and informer configuration. If a finding is purely about efficiency, it belongs in Area 7.
+- **4a. Conditions are initialized and updated coherently**
+  - title: "Inconsistent condition updates across reconcile paths"
+  - finding: conditions are set in some paths but not others, leaving stale or uninitialized conditions (`Major`)
+  - pass: all reconcile exit paths set or preserve conditions consistently
+  - not-observed: no status conditions in scope
+  - evaluation rule: collect the set of distinct condition types from `controller.status_condition_sets` (e.g., `{Available, Progressing}`). For each reconcile exit path that updates status or returns an error, check whether ALL condition types in the set are set. If any exit path sets only a subset of the condition types, that is a finding. A condition type that appears on some paths but not others can retain a stale value from a previous reconcile — this is the definition of "inconsistent" regardless of whether the omitted type is set to True or False when present.
 
-- Pick one access pattern (typed, unstructured, or metadata) per GVK — use it consistently across watches, Get, and List calls. Mixing patterns creates duplicate informers (separate watch connections, doubled memory) even though both receive correct selector config.
-- Match read client to watch type: if a resource is watched as `Unstructured`, read it via the cached client with an unstructured object, not a typed clientset. Vice versa for typed watches.
-- Reading via a raw kubernetes clientset (e.g., `client.AppsV1().Deployments().List()`) bypasses the cache entirely — prefer the controller-runtime cached client.
-- `cache.Options.ByObject` entries match by GVK, so they apply regardless of typed vs unstructured access — no special configuration needed.
-- Resources accessed via `client.Get()`/`client.List()` should have a corresponding watch (`.Watches()`, `.Owns()`, `.For()`) or use a direct client explicitly. If a resource is only read but never watched, it needs a watch added or an explicit uncached client.
-- Ensure `ReaderFailOnMissingInformer: true` is set (see Area 6) so undeclared cache access surfaces immediately.
+- **4b. observedGeneration is set on conditions**
+  - title: "ObservedGeneration not set on status conditions"
+  - finding: status subresource is enabled and `metav1.Condition` structs omit `ObservedGeneration` (`Major`)
+  - pass: `ObservedGeneration` is set on all condition writes, OR status subresource is not used
+  - not-observed: no status condition writes in scope
+  - evidence: use `controller.status_condition_sets[].has_observed_generation` from the analyzer. When the status type uses `[]metav1.Condition`, the `ObservedGeneration` field is available and should be set. Use gopls (`go_file_context`) on the status type (identified by `crd_type.status_field_type`) to confirm the condition type.
 
-**Prefer PartialObjectMetadata:**
-- When the controller only needs metadata (labels, annotations, owner references, name/namespace), use `PartialObjectMetadata` instead of the full typed object to reduce memory consumption and API payload size
-- Ensure watches and cache are configured for metadata-only access by using `.Watches()` with `PartialObjectMetadata` objects
+- **4c. Status writes do not overwrite unrelated data**
+  - title: "Status writes overwrite unrelated controller data"
+  - finding: status update overwrites fields managed by another controller or the user (`Major`)
+  - pass: status updates target only controller-owned fields (conditions, a specific status struct)
+  - not-observed: no status writes in scope
 
-**Avoid caching Secrets and ConfigMaps:**
-- Do not cache Secrets and ConfigMaps unless strictly necessary — they are often large, numerous, and contain sensitive data that increases memory footprint and security exposure
-- When access is needed, prefer direct (uncached) client reads or scope the cache to specific namespaces/labels
-- If caching is unavoidable, restrict it via `cache.Options.ByObject` with label or field selectors
+- **4d. Status updates use consistent conflict handling**
+  - title: "Inconsistent conflict handling across status update paths"
+  - finding: some status update sites use `RetryOnConflict` while others write directly without retry, creating inconsistent conflict resilience (`Minor`)
+  - pass: all status update sites use the same conflict handling strategy, OR the unguarded sites are in error paths where the error itself triggers a requeue
+  - not-observed: fewer than two status update sites in scope
+  - evidence: use `controller.status_update_sites[].is_guarded` and `controller.status_update_sites[].guard_kind` from the analyzer. Compare guarded and unguarded sites. Sites in the same method with mixed strategies indicate inconsistency. Sites in error paths that return the error (triggering requeue) may be acceptable without retry.
 
-### 9. Portability and Vendor API Dependencies
+#### 5. Ownership, Finalizers, and Cleanup Logic
 
-Treat this area as contextual by default; escalate when unguarded vendor API usage causes runtime failures on vanilla Kubernetes.
+- **5a. Owner references are set where appropriate**
+  - title: "Child resources missing owner references"
+  - finding: controller creates child resources without setting owner references, risking orphaned resources (`Major`)
+  - pass: child resources have owner references, OR the controller uses an alternative cleanup mechanism (finalizers, explicit GC)
+  - not-observed: no child resource creation in scope
 
-- Identify imports and usage of vendor-specific API groups (e.g., `openshift.io`, `route.openshift.io`, `security.openshift.io`, `config.openshift.io`, `rancher.cattle.io`, `run.tanzu.vmware.com`) and flag them as distribution-specific dependencies
-- Check whether vendor-specific API usage is guarded by runtime discovery — for example, using the discovery client (`discovery.ServerResourcesForGroupVersion()`) or checking API group availability before registering watches or reconciling vendor resources. Unguarded usage causes the controller to crash or fail to start on clusters that do not have those APIs installed
-- When vendor APIs are used, check whether the controller gracefully degrades (skips vendor-specific logic, logs a warning) when the API is unavailable, or whether it hard-fails
-- Flag vendor-specific resource types used where a portable Kubernetes-native equivalent exists and the vendor type is not strictly required:
-  - `Route` (OpenShift) vs `Ingress` or Gateway API
-  - `DeploymentConfig` (OpenShift, deprecated) vs `Deployment`
-  - `SecurityContextConstraints` (OpenShift) vs `PodSecurityStandards` / `PodSecurity` admission
-- Check whether vendor-specific logic is isolated into separate packages or files, making it possible to build and run the controller without the vendor dependency. Mixing vendor-specific and portable logic in the same reconciler makes the controller harder to port
-- Distinguish between build-time coupling (importing vendor types — the binary links against vendor libraries) and runtime coupling (discovering vendor APIs dynamically). Runtime discovery is preferred when the vendor integration is optional
-- If the controller is explicitly designed for a single vendor platform (e.g., an OpenShift-only operator that manages `ClusterOperator` conditions), vendor API usage is expected — flag it as informational rather than a finding, but still verify that the vendor requirement is documented
-- Severity guidance:
-  - `must` (Critical): vendor API used without any availability guard, causing hard crash or startup failure on vanilla Kubernetes
-  - `should` (Major): vendor API usage is not isolated or documented, making portability difficult without code changes
-  - `contextual` (Minor): vendor API usage is intentional and documented but could benefit from better isolation or graceful degradation
+- **5b. Finalizers gate cleanup when needed**
+  - title: "External cleanup not gated by finalizer"
+  - finding: controller performs external cleanup on deletion but does not use a finalizer to gate it (`Major`)
+  - pass: finalizer is added during reconcile and removed only after cleanup succeeds
+  - not-observed: no deletion handling in scope
 
-## Anti-Findings (Do Not Flag)
+- **5c. Finalizer is not removed before cleanup succeeds**
+  - title: "Finalizer removed before cleanup completes"
+  - finding: finalizer is removed before external cleanup completes or before error checking (`Critical`)
+  - pass: finalizer removal is the last operation after all cleanup succeeds
+  - not-observed: no finalizer logic in scope
 
-The following patterns are explicitly **not findings** and must not appear in the report. Any draft finding whose sole basis matches one of these must be dismissed before validation.
+#### 6. Portability and Vendor API Dependencies
 
-- **Absence of `RetryOnConflict`**: Returning conflict errors and relying on the reconcile loop is the preferred default pattern. Only flag conflict handling when there is evidence of silent data loss, swallowed conflict errors, or writes on knowingly stale objects without returning the error. A finding that says "does not use RetryOnConflict" or "no controller uses RetryOnConflict" without such evidence must be dismissed.
-- **`RetryOnConflict` as a positive highlight**: At best it is a neutral implementation choice that requires scrutiny, never a strength.
+- **6a. Vendor APIs are isolated**
+  - title: "Unguarded vendor API dependency"
+  - finding: vendor-specific API calls are made unconditionally without capability detection or build guards (`Major`)
+  - pass: vendor APIs are behind runtime discovery, build tags, or feature gates
+  - not-observed: no vendor API usage in scope
 
-## Assessment Procedure
+- **6b. Vendor-only startup dependencies**
+  - title: "Controller fails to start without vendor CRDs"
+  - finding: controller fails to start on non-vendor platforms due to unguarded CRD/API dependency (`Critical`)
+  - pass: startup handles missing vendor CRDs gracefully (skip watch, log warning)
+  - not-observed: no vendor-specific startup dependencies in scope
 
-Use this repeatable workflow:
+### Category B: Resource Management and Cache Behavior
 
-1. Determine scope from `$ARGUMENTS`, git diff, or targeted controller/API packages.
-   - If `$ARGUMENTS` points to a GitHub repository, prioritize `api/`, `controllers/`, `config/rbac/`, `config/crd/`, and test directories as initial evidence sources.
-2. If no controller/operator implementation assets are present in scope, stop and return `Not applicable`.
-3. Collect evidence first (specific files and call sites), then classify issues by impact.
-4. Mark each finding as `must`, `should`, or `contextual` based on production risk.
-5. Map internal labels to report severities:
-   - `must` -> `Critical`
-   - `should` -> `Major`
-   - `contextual` -> `Minor`
-6. **Adversarial validation**: After merging Category A and B results (see [Check Categories and Parallel Execution](#check-categories-and-parallel-execution)), launch a clean-context validator subagent with the merged draft findings, draft highlights, and scope. See [Leaf Validator Subagent](#leaf-validator-subagent) for the validator brief and isolation rules.
-7. Apply validation results: update severities, remove dismissed findings, adjust or remove highlights per validator verdicts. Validation **always runs** and its results are applied before scoring regardless of flags. The detailed Validation output section is only included in the report when `--details` is passed.
-8. Generate output with severity, concrete fix, confidence, and any unverified assumptions.
+#### 7. Resource Management and API Efficiency
 
-## Check Categories and Parallel Execution
+- **7a. Cached reads are preferred**
+  - title: "Direct API reads for watched resources"
+  - finding: controller uses direct API reads (non-cached client) for resources that are also watched (`Minor`)
+  - pass: reads use the cached client by default
+  - not-observed: cannot determine client type from code
 
-Categorize checks into these groups before deep analysis:
+- **7b. Status updates are avoided when unchanged**
+  - title: "Unconditional status update on every reconcile"
+  - finding: status is updated on every reconcile even when no fields changed (`Minor`)
+  - pass: status update is skipped or guarded by a comparison when nothing changed
+  - not-observed: no status updates in scope
 
-- **Category A - Correctness, lifecycle, RBAC, security, and portability:** Areas 1, 2, 4, 5, 6, 9
-- **Category B - Performance and cache behavior:** Areas 3, 7, 8
+- **7c. SSA usage is coherent**
+  - title: "Incoherent SSA field manager usage"
+  - finding: SSA is used with conflicting field managers or mixed with non-SSA updates on the same resource (`Major`)
+  - pass: SSA field owner is consistent and not mixed with Update/Patch on the same fields
+  - not-observed: no SSA usage in scope
 
-Execution model:
+- **7d. Helm/Kustomize rendering in reconcile loop is clearly gated**
+  - title: "Helm/Kustomize rendering runs in reconcile loop without clear gating"
+  - finding: a Helm/Kustomize library call is reachable from `Reconcile` and there is no clear state or input gate preventing fresh render work on repeated reconciles (`Minor`; escalate to `Major` when render work is clearly repeated across unconditional paths or paired with repeated chart/base reads)
+  - pass: render calls are outside the reconcile loop, or reconcile-path rendering is clearly gated by generation, content hash, resource version, or equivalent input-change checks
+  - not-observed: no `controller.library_invocations` entries with `invoked_in_reconcile_loop=true`
+  - evidence: use `controller.library_invocations` to identify render-related call sites in `Reconcile` or repo-local helpers/functions/methods reached from `Reconcile`
 
-1. Launch one subagent per category and run the two category checks in parallel.
-2. Give each subagent explicit scope, expected evidence format (file path plus line references), and severity expectations. Category A subagent **must not** produce findings for the mere absence of `RetryOnConflict` — verify that conflict errors are swallowed or cause silent data loss before considering any conflict-handling finding (see [Anti-Findings](#anti-findings-do-not-flag)).
-3. Require each subagent to return findings using this schema:
-   - `id`, `title`, `area`, `severity`, `what`, `where`, `why`, `fix`, `confidence`, `notVerified`
-   - `where` should use repo-relative GitHub-style location string(s), especially for each `Critical` or `Major` finding
-   - Assign category-prefixed IDs (`A-1`, `A-2`, ... for Category A; `B-1`, `B-2`, ... for Category B). The parent agent reassigns sequential IDs after merge.
-4. Require each subagent to return positive highlights.
-5. Merge results in the parent agent, deduplicate overlapping findings, normalize severity using the mapping above, and produce one final report in the output format below.
-6. If categories conflict on severity, prefer the higher severity and explain the rationale in the final report.
-7. If parallel subagent execution is unavailable, run Category A and Category B sequentially using the same evidence and severity rules.
+- **7e. Rendered artifacts are reused or cached coherently**
+  - title: "Rendered artifacts are recomputed without reuse"
+  - finding: the reconcile loop performs fresh Helm/Kustomize render work for stable inputs and there is no clear reuse, memoization, or cached rendered-output path (`Minor`)
+  - pass: rendered artifacts are reused, memoized, or clearly bounded to input changes rather than recomputed on repeated reconciles
+  - not-observed: no `controller.library_invocations` entries with `invoked_in_reconcile_loop=true`
+  - evidence: start from `controller.library_invocations` and verify whether render results are persisted or reused across reconcile iterations
 
-## Leaf Validator Subagent
+#### 8. Performance and Cache Usage
 
-After merging Category A and B results, launch a **separate subagent** to adversarially validate the merged findings and highlights. The validator operates with a clean context — it does not receive the primary reviewer's or category subagents' reasoning or intermediate notes.
+- **8a. Watches and predicates avoid churn**
+  - title: "Watches without predicates cause reconcile churn"
+  - finding: watches lack predicates, causing reconciliation on every update to watched resources (`Minor`)
+  - pass: watches use predicates or event filters to reduce unnecessary reconciles
+  - not-observed: no watches configured in scope
 
-### Isolation rules
+- **8b. Hidden informer creation**
+  - title: "Informers created outside manager cache"
+  - finding: code creates additional informers or list/watches outside the manager cache, duplicating API server load (`Minor` unless it clearly affects correctness or memory materially, then `Major`)
+  - pass: all watches go through the manager cache
+  - not-observed: no evidence of informer creation outside the manager
 
-- Run in a separate subagent
-- Receive only: the scope (from `$ARGUMENTS` or resolved defaults), merged draft findings, and merged draft highlights
-- Re-read code independently from the evidence locations in each finding's `where` field
-- Do not rely on the category subagents' internal reasoning
+#### 9. Cache Consistency and Client Type Alignment
 
-### Validator brief
+- **9a. Access pattern per GVK is coherent**
+  - title: "Mixed cached and uncached reads for same GVK"
+  - finding: same GVK is read via both cached and uncached clients without clear justification (`Major`)
+  - pass: each GVK uses a consistent client type
+  - not-observed: cannot determine client type per GVK
 
-> **Role**: You are a skeptical reviewer. Your job is to challenge each finding from a controller architecture assessment and determine whether it actually impacts runtime behavior, correctness, or operational safety. You also verify that positive highlights do not contradict the findings.
->
-> **Inputs you receive**:
-> - The merged draft findings list (each following the canonical finding model from `validation-output-schema.md`)
-> - The merged draft positive highlights list (each with: `id`, `sourceSkill`, `description`). For this leaf skill, `sourceSkill` is always `k8s.controller-architecture`
-> - The scope so you can read the same code
->
-> **Your task**:
->
-> **Part 1 — Validate findings:**
-> For each finding, independently read the code at the referenced location and evaluate:
-> 1. **Is the finding accurate?** Does the code actually exhibit the described problem?
-> 2. **Does it affect behavior?** Would fixing this change runtime behavior, correctness, or operational safety — or is it purely stylistic / cosmetic / theoretical?
-> 3. **Is the severity appropriate?** A pattern that looks non-ideal but cannot cause incorrect behavior, data loss, or operational failure should be downgraded.
->
-> **Part 2 — Validate highlights against findings:**
-> For each positive highlight, check whether it contradicts any finding:
-> - A highlight must not praise a pattern that is also flagged as a finding.
-> - If a highlight praises a pattern whose absence is flagged as a finding anywhere in the report, mark the highlight for removal or rewording.
-> - If the same concept is used correctly in some code paths and incorrectly in others, the correct usage is not a highlight — only the incorrect usage should appear (as a finding).
-> - Highlights that do not conflict with any finding should be kept as-is.
->
-> **Known false positives — dismiss immediately:**
-> - Any finding whose sole basis is the absence of `RetryOnConflict`. The skill defines returning conflict errors and relying on the requeue loop as the **default valid pattern**. Only flag conflict handling when there is evidence of silent data loss, swallowed conflict errors, or writes on knowingly stale objects without returning the error. Dismiss any finding that says "does not use RetryOnConflict" without such evidence.
->
-> **Downgrade rules** (findings only):
-> - A finding that is factually correct but has **no behavioral impact** → downgrade by one level (Critical→Major, Major→Minor, Minor→dismiss)
-> - A finding where the described problem **cannot occur** given the surrounding code → dismiss entirely
-> - A finding where the severity is appropriate and the behavioral impact is real → keep as-is
->
-> **Output schema**:
->
-> Finding validations (one entry per finding):
-> ```
-> findingId: <id matching the draft findings list>
-> originalSeverity: critical / major / minor
-> validatedSeverity: critical / major / minor / dismissed
-> verdict: confirmed / downgraded / dismissed
-> reason: <1-2 sentences explaining why — reference specific code evidence>
-> validationLayer: leaf
-> ```
->
-> Highlight validations (one entry per highlight that needs adjustment):
-> ```
-> highlightId: <id matching the draft highlights list>
-> verdict: keep / remove / reword
-> reason: <1-2 sentences explaining the contradiction with a specific finding>
-> suggestedRewording: <if verdict is reword, the revised text — omit if remove or keep>
-> ```
->
-> **Verdict vocabulary**: Leaf validators use `confirmed`, `downgraded`, or `dismissed`. The orchestrator validator uses `confirmed`, `adjusted`, or `dismissed` instead, because it operates on already-validated findings and makes cross-skill adjustments rather than per-finding accuracy checks.
->
-> Do **not** produce new findings. Your role is to validate, not to review.
+- **9b. Cached reads match watched resources**
+  - title: "Cached reads for unwatched resources"
+  - finding: controller reads from cache for a resource it does not watch, getting stale data (`Major`)
+  - pass: all cached reads are for watched resources
+  - not-observed: cannot determine watch-to-read mapping
 
-### Applying validation results
+- **9c. Mixed typed and unstructured informers**
+  - title: "Duplicate informers from mixed typed and unstructured watches"
+  - finding: same resource is watched via both typed and unstructured informers, causing double cache entries (`Major` only when it creates concrete duplication or correctness risk, otherwise `Minor`)
+  - pass: each resource uses one informer type
+  - not-observed: no mixed informer patterns in scope
 
-1. Update each finding's severity to the `validatedSeverity`.
-2. Remove any finding with `validatedSeverity: dismissed`.
-3. Remove any highlight with `verdict: remove`.
-4. Replace any highlight with `verdict: reword` with the validator's `suggestedRewording`.
-5. Keep downgrade and dismissal rationale for the `validation` results. Do not append validator provenance into the finding's `notVerified` field.
-6. Recompute severity counts using the validated severities.
+## Anti-Findings
+
+Do not emit findings for:
+
+- absence of `RetryOnConflict` when conflict errors are returned normally
+- `RetryOnConflict` as a positive highlight
+- purely stylistic reconcile shape differences without an operational effect
+
+## gopls Verification Protocol
+
+The `gopls-lsp` plugin provides MCP tools for Go semantic analysis. Use these to verify and enrich the static analyzer's structural findings. These verification steps are **mandatory** in deterministic mode — not optional fallbacks.
+
+### RBAC verification (checklist 3a-d)
+
+For each controller fact, verify RBAC-to-API-call alignment:
+
+1. For each `api_calls` entry where `obj_type` is a variable name (not a type literal like `&Deployment{}`):
+   - Call `go_file_context` on the controller file to resolve the variable's actual Go type
+   - This determines the actual k8s resource being accessed for RBAC correlation
+
+2. For each `rbac_markers` resource that has no matching `api_calls` entry:
+   - Call `go_symbol_references` for the resource type name in the controller file
+   - If no references found, do not immediately emit a 3a finding. First check whether the controller has `library_invocations` with `invoked_in_reconcile_loop=true` or generic apply helpers that may apply rendered `unstructured.Unstructured` objects.
+   - Use `go_file_context` / `go_search` on the reconcile path to look for generic apply helpers, `unstructured.Unstructured`, or rendered object slices/maps flowing into apply logic.
+   - If rendered/generic apply paths are present and the concrete GVK set cannot be enumerated from evidence, treat the extra-RBAC side of 3a as ambiguous: prefer `not-observed`, or at most `Low` confidence with an explicit `notVerified` note that rendered resources could consume the permission.
+   - Only emit a scored unused-RBAC finding when no controller references and no rendered/generic apply ambiguity are visible.
+
+3. For any `api_calls` entry whose receiver is ambiguous (not clearly `r.Client` or similar):
+   - Call `go_search` for the reconciler struct name to verify it embeds `client.Client`
+
+4. When `rbac_markers` and `rbac_manifest` disagree:
+   - Treat the manifest as the effective permission set for checklist 3a-d
+   - Treat the marker/manifest mismatch as generator drift evidence, not as a reason to ignore the manifest
+
+### Error propagation verification (checklist 2a-c)
+
+For each controller fact:
+
+1. If `error_returns` exist but reconcile paths appear to call helper functions:
+   - Call `go_symbol_references` for helper functions called from Reconcile
+   - Trace whether their error returns propagate up to the controller runtime
+
+### Status condition verification (checklist 4a-b, 4d)
+
+For each controller fact with `status_condition_sets`:
+
+1. If any condition has `has_observed_generation: false`:
+   - Use the `crd_type.status_field_type` from the analyzer to identify the status struct name
+   - Call `go_file_context` on the API types file to inspect the status struct and verify whether it uses `[]metav1.Condition` (which has ObservedGeneration) or a custom type
+   - If the struct uses `metav1.Condition`, the omission is a 4b finding
+
+2. For checklist 4d, use `controller.status_update_sites` directly:
+   - Compare `is_guarded` and `guard_kind` across all sites
+   - Sites with `is_guarded: true` use retry wrappers; sites with `is_guarded: false` do not
+   - If both guarded and unguarded sites exist, check whether unguarded sites are in error paths that return the error (triggering controller-runtime requeue)
+   - Use `controller.retry_ops` to understand what retry strategy is in use (function, backoff kind, wrapped calls)
+
+### Vendor isolation verification (checklist 6a-b)
+
+For each `import_analysis` fact with `vendor_imports`:
+
+1. Call `go_package_api` on the vendor import path to understand what types are used
+2. Check whether usage is behind build tags or runtime discovery by reading the import file context
+
+### Library rendering verification (checklist 7d-e)
+
+For each `controller` fact with one or more `library_invocations` entries where `invoked_in_reconcile_loop=true`:
+
+1. Use `go_file_context` on the controller file and the referenced method to confirm the library call sits in `Reconcile` or a repo-local helper/function/method reached from `Reconcile`
+2. Use `go_symbol_references` on the containing helper method (when not `Reconcile`) to verify it is actually called from reconcile-path methods
+3. Use `go_search` on the reconciler struct to inspect whether it stores cached rendered output, memoized inputs, or renderer state used to avoid fresh render work on repeated reconciles
+4. If no cache or reuse path is visible and the same render helper is reachable on repeated reconcile paths, assess it as fresh read+render per reconcile
+
+### Cache and client type verification (checklist 9a-b)
+
+1. Call `go_search` for the reconciler struct to see if it has both cached and uncached client fields
+2. For ambiguous `api_calls`, use `go_file_context` to determine which client field the receiver references
+
+## Deterministic Procedure
+
+Run the assessment in this exact order:
+
+1. Resolve scope from explicit scope text or `$ARGUMENTS`.
+2. Run the static analyzer with `--skill architecture`. Load the full JSON output into context.
+3. If `manifest.count` is 0, return `Not applicable`.
+4. Run the gopls verification protocol for checklist areas 2, 3, 4, 6, 7, and 9 as specified above.
+5. Walk every checklist item (1a through 9c, including 4d, 7d, and 7e) in order. For each item, record one disposition: `finding`, `pass`, or `not-observed` using the checklist criteria, the analyzer facts, and gopls verification results. Do not skip items.
+6. Draft findings only from items with `finding` disposition. Every finding must trace to a specific checklist item ID (e.g., "4b"). Observations outside the checklist may appear in a `Notes` section but do not receive an ID, severity, or score impact.
+7. Apply anti-finding rules to dismiss any violations.
+8. Run one deterministic leaf validation pass in the same session:
+   - dismiss findings unsupported by cited evidence
+   - dismiss any anti-finding violations
+   - lower severity only when the written criteria support the lower level
+   - remove or reword highlights that contradict findings
+9. Sort findings using the shared schema rules. Assign final IDs after sorting.
+10. Compute category scores and overall score.
+
+In deterministic mode do not:
+
+- default to `git diff`
+- launch category subagents
+- run validator fan-out
+- expand scope beyond what the evidence manifest discovered
+- use ad-hoc `sg` (ast-grep) queries for facts the analyzer already provides
+- skip gopls verification steps defined in the protocol
+
+`--mode=exploratory` may widen scope after the manifest and may run additional searches, but the report format and scoring stay the same.
+
+## Severity Mapping
+
+Severity for each checklist item is defined inline in the assessment areas above. When evidence fits two adjacent levels and the criteria do not force the higher level, choose the lower level.
 
 ## Scoring
 
-Use this weighting to keep assessments consistent:
+1. Start Category A at 100.
+2. Start Category B at 100.
+3. Subtract from each category:
+   - `Critical`: 20
+   - `Major`: 10
+   - `Minor`: 3
+4. Floor each category score at 0.
+5. Compute `Architecture = Category A x 0.60 + Category B x 0.40`.
+6. Findings with `confidence: Low` do not contribute to score deductions.
+7. Show arithmetic in the report.
 
-- **Category A** — Correctness, data safety, RBAC, security, and portability (Areas 1, 2, 4, 5, 6, 9): **60%**
-- **Category B** — Performance and scalability (Areas 3, 7, 8): **40%**
+Interpretation:
 
-Scoring procedure:
-
-1. Start each category at 100.
-2. For each finding, subtract points based on severity:
-   - Critical: **-20** per finding
-   - Major: **-10** per finding
-   - Minor: **-3** per finding
-3. Floor each category score at 0.
-4. Compute the overall score as the weighted sum: `Overall = A × 0.60 + B × 0.40`.
-5. Report both the per-category scores and the overall score.
-
-Interpretation of overall score:
-
-- **90-100**: Production-ready with minor polish
-- **75-89**: Solid baseline, a few important gaps
-- **50-74**: Significant issues to address before production
-- **<50**: High operational risk; major redesign/fixes recommended
-
-When Category A and Category B scores diverge by more than 20 points, call out the divergence in the Summary.
+- `90-100`: Production-ready with minor polish
+- `75-89`: Solid baseline, a few important gaps
+- `50-74`: Significant issues to address before production
+- `<50`: High operational risk; major redesign or fixes recommended
 
 ## Output Format
 
-Produce the assessment in this format. All sections are always included unless noted otherwise.
-Use the canonical report, finding, highlight, and validation model from [validation-output-schema.md](../../references/validation-output-schema.md).
+Produce the assessment using the canonical model from [validation-output-schema.md](../../references/validation-output-schema.md).
 
 Output conventions:
 
-- `scope` should follow the shared URI-like form when expressed structurally (for example, `diff://working-tree`, `repo://org/repo`, `controller://MyReconciler`)
-- `where` should use repo-relative GitHub-style location string(s) (for example, `controllers/myresource_controller.go#L118-L146`)
-- Use the shared `notVerified` concept consistently; render it in Markdown as `Not verified`
+- `scope` should use a URI-like string such as `repo://org/repo`, `dir://controllers`, or `controller://MyReconciler`
+- `where` should use repo-relative GitHub-style location strings
+- Sort findings by severity, area, `where`, and title before assigning final IDs
+
+### Evidence Manifest
+
+Paste the `manifest` section from the analyzer JSON output, including `count`, `hash`, and the categorized file entries. Do not edit, reformat, or summarize the output. This section makes the report auditable and verifiable.
 
 ### Summary
 
-2-3 sentences describing the overall quality and maturity of the controller implementation.
+Write 2-3 sentences describing controller architecture quality.
 
 Score table:
 
 | Metric | Value |
 |--------|-------|
-| **Score** | 0-100 (or `Not applicable`) |
-| **Category A** (Correctness, RBAC, Security, Portability) | 0-100 |
-| **Category B** (Performance, Scalability) | 0-100 |
-| **Interpretation** | One of: Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
+| **Score** | 0-100 or `Not applicable` |
+| **Category A** | 0-100 or `Not applicable` |
+| **Category B** | 0-100 or `Not applicable` |
+| **Interpretation** | Production-ready with minor polish / Solid baseline, a few important gaps / Significant issues to address before production / High operational risk |
 
 Severity count table:
 
@@ -368,47 +460,34 @@ Severity count table:
 | Major | _n_ |
 | Minor | _n_ |
 
-Findings summary table (one row per finding, sorted by severity then by area):
+Findings summary table (use the checklist `title` in the What column):
 
 | # | Severity | Area | What | Where | Confidence |
 |---|----------|------|------|-------|------------|
 
-- **Where** must include repo-relative GitHub-style location string(s) for every Critical and Major finding.
+### Findings
 
-### Findings (only with `--details`)
+For each finding, use the canonical text from the checklist item:
 
-This section is only included when the `--details` flag is passed.
+- **Title**: use the `title` from the checklist item verbatim
+- **What**: use the `finding` text from the checklist item verbatim
+- **Checklist item**: the item ID (e.g., 4b)
+- **Severity**: from the checklist item
+- **Area**: exact section heading
+- **Where**: repo-relative paths with line ranges from the evidence
+- **Confidence**: `High` if all `where` entries have line ranges, `Medium` if any are path-only, `Low` if no `where` references
+- **Not verified**: assumptions or checks not performed
+- **Why**: explain how the specific code triggers this checklist criterion — reference the actual function names, variables, and control flow found in the evidence
+- **Fix**: concrete suggested change using the specific types and patterns from the codebase
 
-For each finding (numbered to match the summary table), produce:
+### Validation
 
-#### _N_. _Finding title_
+Include this section when one or more findings or highlights changed during the deterministic second pass. Otherwise render "No adjustments."
 
-| | |
-|---|---|
-| **Severity** | Critical / Major / Minor |
-| **Area** | Assessment area name |
-| **Where** | GitHub-style location string(s) |
-| **Confidence** | High / Medium / Low |
-| **Not verified** | Shared `notVerified` content rendered for humans (or `—`) |
+### Highlights
 
-**Why**: Explanation of why this is an issue, with reference to upstream convention if applicable.
+Include only positive highlights that do not contradict any finding.
 
-**Fix**: Concrete suggested change.
+### Notes
 
----
-
-### Validation (only with `--details`)
-
-**Do NOT include this section unless `--details` is passed.** When `--details` is active and the validation phase produced changes, list each downgraded or dismissed finding:
-
-| # | Original Severity | Validated Severity | Verdict | Reason |
-|---|-------------------|--------------------|---------|--------|
-
-Highlight validation changes (only when one or more highlights were removed or reworded):
-
-| Highlight | Verdict | Reason | Suggested Rewording |
-|-----------|---------|--------|---------------------|
-
-### Positive Highlights
-
-Things the implementation does well, patterns worth preserving or replicating.
+Optional. Observations outside the checklist that may be useful but do not receive IDs, severity, or score impact.
