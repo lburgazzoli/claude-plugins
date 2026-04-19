@@ -1,6 +1,13 @@
 ---
 name: k8s.controller-analyzer
 description: Validate that the k8s-controller-analyzer tool and the k8s.controller-* assessment skills are in sync — every checklist item has a corresponding extractor, and every extractor maps to a checklist item.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash
+  - mcp__k8s-controller-analyzer__analyze_controller
 ---
 
 # Controller Analyzer ↔ Skill Sync Validation
@@ -64,6 +71,14 @@ For every row in EXTRACTORS.md:
 - The rule ID MUST exist as a constant in `consts.go`
 - The extractor file referenced MUST exist under `pkg/extractor/`
 - The fields listed MUST exist as struct fields in the corresponding data type in `types.go`
+- For nested RBAC signal fields, verify the full path exists in the data model, including:
+  - `rbac_markers.permissions`
+  - `api_calls.required_permissions`
+  - `event_usages.required_permissions`
+  - `ambiguity_signals`
+  - `rbac_manifest.has_wildcard_group`
+  - `rbac_manifest.has_wildcard_resource`
+  - `rbac_manifest.has_wildcard_verb`
 
 **Finding**: EXTRACTORS.md references a rule, file, or field that doesn't exist.
 
@@ -77,6 +92,17 @@ For each leaf skill (architecture, api, production-readiness):
 - The `## Deterministic Procedure` MUST reference the analyzer as step 2
 
 **Finding**: a skill is missing the analyzer integration sections or references the wrong skill flag.
+
+For `skills/k8s.controller-architecture/SKILL.md` specifically:
+- The RBAC fact-to-checklist mapping for `3a-d` MUST reference `controller.event_usages` and `controller.ambiguity_signals` in addition to `controller.rbac_markers`, `controller.api_calls`, and `rbac_manifest`
+- The RBAC reasoning order MUST describe:
+  - `rbac_manifest.permissions` as the primary committed-permission source
+  - `controller.api_calls[].required_permissions` and `controller.event_usages[].required_permissions` as the preferred required-permission sources
+  - `controller.ambiguity_signals` as an uncertainty input for unused-RBAC handling
+- Checklist `3b` MUST prefer `rbac_manifest.has_wildcard_group`, `has_wildcard_resource`, and `has_wildcard_verb` as evidence
+- Checklist `3c` MUST describe matching `controller.event_usages[].required_permissions` against `rbac_manifest.permissions`
+
+**Finding**: the architecture skill still documents RBAC reasoning only in terms of coarse raw fields and does not reflect the normalized signal contract.
 
 For the orchestrator skill (`k8s.controller-assessment`):
 - It MUST reference `references/analyzer-output-schema.md` as the analyzer input contract
@@ -97,7 +123,7 @@ For each YAML fact kind (`rbac_manifest`, `crd_manifest`, `webhook_manifest`, `d
 
 For each valid `--skill` value (`architecture`, `api`, `production-readiness`):
 - The manifest builder in `manifest.go` MUST produce categories matching the skill's expected evidence categories
-- Run: `<plugin-root>/scripts/k8s-controller-analyzer.sh tools/k8s-controller-analyzer/testdata/simple-operator --skill <skill> --format json`
+- Run: use the `analyze_controller` MCP tool with `repo_path` set to `tools/k8s-controller-analyzer/testdata/simple-operator` (absolute path) and `skill` set to the skill being tested
 - Verify the output has a `manifest` section with `count > 0` and a 12-character `hash`
 
 **Finding**: manifest builder produces empty or malformed output for a valid skill.
@@ -111,6 +137,18 @@ Use `references/analyzer-output-schema.md` as the canonical analyzer-input refer
 - The contract states that `rules` is always an array in schema `v3`
 - The controller payload documents nested `reconciles.{group,version,kind}`
 - The RBAC guidance is manifest-first (`rbac_manifest` primary, `rbac_markers` secondary)
+- The controller payload documents the normalized RBAC signal fields:
+  - `rbac_markers[].permissions`
+  - `api_calls[].required_permissions`
+  - `api_calls[].receiver_resolution`
+  - `api_calls[].object_resolution`
+  - `event_usages[].required_permissions`
+  - `ambiguity_signals[]`
+- The RBAC manifest payload documents:
+  - `permissions`
+  - `has_wildcard_group`
+  - `has_wildcard_resource`
+  - `has_wildcard_verb`
 
 **Finding**: the shared analyzer schema reference is stale or contradicts the actual analyzer output contract.
 

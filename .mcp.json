@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "k8s-controller-analyzer": {
+      "command": "bash",
+      "args": ["-c", "cd tools/k8s-controller-analyzer && go run ./cmd mcp"]
+    },
+    "gopls": {
+      "command": "gopls",
+      "args": ["mcp"]
+    }
+  }
+}

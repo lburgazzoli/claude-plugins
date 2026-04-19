@@ -11,7 +11,10 @@ const (
 	MarkerPrintColumn       = "kubebuilder:printcolumn"
 	MarkerValidationOpt     = "kubebuilder:validation:Optional"
 	MarkerValidationReq     = "kubebuilder:validation:Required"
+	MarkerXValidation       = "kubebuilder:validation:XValidation"
 	MarkerGroupName         = "groupName"
+	MarkerListType          = "listType"
+	MarkerListMapKey        = "listMapKey"
 )
 
 // Kubebuilder marker argument keys.
@@ -111,6 +114,10 @@ const (
 	RuleLibraryImports    = "library-imports"
 	RuleStructuredLogging = "structured-logging"
 	RuleMetricsCoverage   = "metrics-coverage"
+	RuleListTypeMarkers   = "list-type-markers"
+	RuleCELValidation     = "cel-validation"
+	RuleManagerConfig     = "manager-config"
+	RuleConcurrencyConfig = "concurrency-config"
 )
 
 // Rule IDs for YAML extractors.
@@ -141,4 +148,12 @@ const (
 	KindNetworkPolicyManifest = "networkpolicy_manifest"
 	KindTestDiscovery         = "test_discovery"
 	KindManifest              = "manifest"
+	KindManagerConfig         = "manager_config"
+)
+
+// Controller-runtime manager option names.
+const (
+	FuncNewManager         = "NewManager"
+	FuncSetupSignalHandler = "SetupSignalHandler"
+	FuncWithOptions        = "WithOptions"
 )

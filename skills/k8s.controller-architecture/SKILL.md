@@ -1,6 +1,17 @@
 ---
 name: k8s.controller-architecture
 description: Assess a Kubernetes controller architecture for upstream conventions, kubebuilder practices, and correctness.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Grep
+  - Glob
+  - mcp__k8s-controller-analyzer__analyze_controller
+  - mcp__gopls__go_file_context
+  - mcp__gopls__go_symbol_references
+  - mcp__gopls__go_search
+  - mcp__gopls__go_package_api
+  - LSP
 ---
 
 # Kubernetes Controller Architecture Assessment
@@ -38,9 +49,7 @@ Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as
 
 ### Run
 
-```bash
-<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --skill architecture --format json
-```
+Use the `analyze_controller` MCP tool with `repo_path` set to the repository root and `skill` set to `architecture`.
 
 If the orchestrator (`k8s.controller-assessment`) has already run the analyzer and the JSON is loaded in context, skip the run step.
 
@@ -55,11 +64,11 @@ If `manifest.count` is 0, return `Not applicable`.
 
 This is the **primary evidence source** for all analysis. The output contains facts with these kinds:
 
-- `controller` — reconciler structs, RBAC markers, API calls, finalizer/owner-ref ops, status conditions (with ObservedGeneration), status update sites (with retry guard detection), retry ops, library invocation sites, event usages, not-found handlers, predicate usages, requeue ops, error returns, owns/watches
+- `controller` — reconciler structs, RBAC markers (with normalized permissions), API calls (with operation class, resolution metadata, and normalized required permissions), finalizer/owner-ref ops, status conditions (with ObservedGeneration), status update sites (with retry guard detection), retry ops, library invocation sites, event usages, not-found handlers, predicate usages, requeue ops, error returns, owns/watches, and ambiguity signals
 - `crd_version` — CRD version storage/hub/spoke info
 - `import_analysis` — vendor imports, library imports, unstructured logging, metrics
 - `scheme_registration` — scheme registrations in main/cmd
-- `rbac_manifest` — Role/ClusterRole YAML: rules, wildcards, event permissions
+- `rbac_manifest` — Role/ClusterRole YAML: rules, normalized permissions, split wildcard metadata, event permissions
 - `crd_manifest` — CRD YAML: versions, conversion strategy, scope
 
 Do not re-derive facts that the analyzer already provides. Do not use `sg` (ast-grep) queries for patterns the analyzer extracts. The analyzer uses `go/packages` for accurate AST parsing — it is more reliable than syntax-only pattern matching.
@@ -68,7 +77,7 @@ Do not re-derive facts that the analyzer already provides. Do not use `sg` (ast-
 
 | Analyzer Facts | Checklist Items |
 |----------------|-----------------|
-| `controller.rbac_markers` + `controller.api_calls` + `rbac_manifest` | 3a-d (RBAC) |
+| `controller.rbac_markers` + `controller.api_calls` + `controller.event_usages` + `controller.ambiguity_signals` + `rbac_manifest` | 3a-d (RBAC) |
 | `controller.error_returns` + `controller.requeue_ops` | 2a-c (Error handling) |
 | `controller.finalizer_ops` + `controller.owner_ref_ops` + `controller.external_write_ops` | 5a-c (Finalizers) |
 | `controller.status_condition_sets` + `controller.status_update_sites` + `controller.retry_ops` | 4a-d (Status) |
@@ -77,12 +86,16 @@ Do not re-derive facts that the analyzer already provides. Do not use `sg` (ast-
 | `controller.library_invocations` | 7d-e (Rendering/caching) |
 | `import_analysis.vendor_imports` | 6a-b (Vendor isolation) |
 | `scheme_registration` | Informational for 9a-b |
+| `controller.api_calls` (target matches `controller.reconciles`) | 10a (Spec writes) |
+| `controller.max_concurrent_reconciles` | 11a (Concurrency safety) |
 
 For RBAC checklist items, reason in this order:
 
-1. Treat `rbac_manifest` as the primary evidence for effective committed permissions.
-2. Use `controller.api_calls` to determine what permissions the controller actually needs.
-3. Use `controller.rbac_markers` as secondary evidence for drift checks between source markers and generated/committed RBAC.
+1. Treat `rbac_manifest.permissions` as the primary evidence for effective committed permissions.
+2. Use `controller.api_calls[].required_permissions` plus `controller.event_usages[].required_permissions` to determine what permissions the controller actually needs when they are concrete.
+3. Use `controller.ambiguity_signals` to detect unresolved receiver, unstructured, or rendered-object cases before scoring unused-RBAC findings.
+4. Use `controller.rbac_markers[].permissions` as secondary evidence for drift checks between source markers and generated/committed RBAC.
+5. Fall back to raw `rbac_manifest.rules`, `controller.rbac_markers`, or raw `obj_type` strings only when the normalized signals are empty and the gap is itself the thing being verified.
 
 ## Assessment Areas
 
@@ -140,25 +153,29 @@ Use area names exactly as written in the section headings below.
   - finding: RBAC grants permissions for resources the controller never accesses, OR the controller accesses resources without corresponding RBAC (`Major`)
   - pass: RBAC markers align with actual client calls
   - not-observed: no RBAC markers or no client calls in scope
-  - deterministic rule: treat the two branches differently. Missing required RBAC may be reported directly from concrete controller API usage. Extra or apparently unused RBAC should only be reported when the controller's concrete resource usage is observable from code/manifests. If Helm/Kustomize rendering in the reconcile loop or generic `unstructured.Unstructured` apply paths make the concrete rendered GVK set ambiguous, do not emit a scored unused-RBAC finding from the absence of matching `api_calls` alone; use `not-observed`, or a `Low` confidence finding only when the ambiguity itself is the main point.
+  - deterministic rule: treat the two branches differently. Missing required RBAC may be reported directly from concrete `controller.api_calls[].required_permissions` evidence. Extra or apparently unused RBAC should only be reported when the controller's concrete resource usage is observable from `controller.api_calls[].required_permissions`, `controller.event_usages[].required_permissions`, and manifests. If `controller.ambiguity_signals`, reconcile-loop rendering, or generic `unstructured.Unstructured` apply paths make the concrete rendered GVK set ambiguous, do not emit a scored unused-RBAC finding from the absence of matching `required_permissions` alone; use `not-observed`, or a `Low` confidence finding only when the ambiguity itself is the main point.
+  - matching rule: compare normalized permission tuples by `group`, `resource`, `subresource`, and verb coverage. A manifest permission satisfies a required permission when the tuple matches exactly or the manifest verb set is a strict superset for the same resource tuple.
 
 - **3b. No wildcard RBAC**
   - title: "Wildcard RBAC verbs or resources"
   - finding: RBAC uses `*` for verbs or resources (`Major`)
   - pass: all RBAC entries use explicit verbs and resource names
   - not-observed: no RBAC markers in scope
+  - evidence: use `rbac_manifest.has_wildcard_group`, `has_wildcard_resource`, and `has_wildcard_verb` first; use source markers only for drift context when no manifest exists
 
 - **3c. Event permissions match event usage**
   - title: "Event RBAC does not match event usage"
   - finding: controller emits events but lacks RBAC for events, OR has event RBAC but never emits events (`Minor`)
   - pass: event RBAC matches actual event recorder usage
   - not-observed: no events or event RBAC in scope
+  - evidence: compare `controller.event_usages[].required_permissions` against `rbac_manifest.permissions`; use `rbac_manifest.has_events` only as a coarse fallback when normalized permission tuples are absent
 
 - **3d. Cluster-scoped permissions are justified**
   - title: "Unjustified cluster-scoped RBAC"
   - finding: cluster-scoped RBAC (ClusterRole) grants broad access without clear need from the controller logic (`Major`)
   - pass: cluster-scoped permissions correspond to cluster-scoped resources the controller manages
   - not-observed: no cluster-scoped RBAC in scope
+  - evidence: start from `rbac_manifest.kind == ClusterRole` plus `rbac_manifest.permissions`; justify them with concrete `required_permissions`, known cluster-scoped resources, or scope evidence from CRD/YAML manifests
 
 #### 4. Status, Conditions, and Observed Generation
 
@@ -293,6 +310,24 @@ Use area names exactly as written in the section headings below.
   - pass: each resource uses one informer type
   - not-observed: no mixed informer patterns in scope
 
+#### 10. Spec-Status Contract Boundary
+
+- **10a. Controller does not write to spec**
+  - title: "Controller writes to primary resource spec"
+  - finding: controller issues Update or Patch calls targeting the primary resource's spec (not status subresource), violating the spec-status contract where spec is user-owned (`Major`)
+  - pass: controller only writes to status subresource and metadata (labels, annotations, finalizers) on the primary resource
+  - not-observed: no Update/Patch calls on the primary resource in scope
+  - evidence: use `controller.api_calls` to find calls where the target GVK matches `controller.reconciles` and `operation_class` is Update or Patch (not StatusUpdate or StatusPatch)
+
+#### 11. Concurrency Safety
+
+- **11a. Reconciler struct is safe for concurrent use**
+  - title: "Reconciler struct has unsynchronized mutable state with concurrent reconciles"
+  - finding: `MaxConcurrentReconciles` is set > 1 and the reconciler struct contains mutable fields (maps, slices, counters) without visible synchronization primitives (sync.Mutex, sync.RWMutex, sync.Map, atomic) (`Major`)
+  - pass: `MaxConcurrentReconciles` is 1 (default), OR mutable shared state is protected with synchronization, OR the reconciler struct contains only immutable fields (client, logger, scheme, recorder)
+  - not-observed: no `MaxConcurrentReconciles` configuration in scope
+  - evidence: use `controller.max_concurrent_reconciles` from the analyzer. When > 1, use gopls to inspect the reconciler struct definition for mutable fields.
+
 ## Anti-Findings
 
 Do not emit findings for:
@@ -300,32 +335,55 @@ Do not emit findings for:
 - absence of `RetryOnConflict` when conflict errors are returned normally
 - `RetryOnConflict` as a positive highlight
 - purely stylistic reconcile shape differences without an operational effect
+- controllers that only write to metadata (annotations, labels, finalizers) on the primary resource — this is not a spec write
 
 ## gopls Verification Protocol
 
 The `gopls-lsp` plugin provides MCP tools for Go semantic analysis. Use these to verify and enrich the static analyzer's structural findings. These verification steps are **mandatory** in deterministic mode — not optional fallbacks.
 
+If the `gopls-lsp` MCP server is unavailable, use the built-in `LSP` tool with gopls as a fallback:
+
+| MCP tool | LSP equivalent |
+|----------|---------------|
+| `go_file_context` | `documentSymbol` on the file, then `hover` on specific symbols |
+| `go_symbol_references` | `findReferences` at the symbol's position |
+| `go_search` | `workspaceSymbol` with the symbol name |
+| `go_package_api` | `documentSymbol` on the package's Go files |
+
 ### RBAC verification (checklist 3a-d)
 
 For each controller fact, verify RBAC-to-API-call alignment:
 
-1. For each `api_calls` entry where `obj_type` is a variable name (not a type literal like `&Deployment{}`):
-   - Call `go_file_context` on the controller file to resolve the variable's actual Go type
-   - This determines the actual k8s resource being accessed for RBAC correlation
+1. Build the concrete required-permission set from `controller.api_calls[].required_permissions` and `controller.event_usages[].required_permissions`.
+   - Treat these normalized tuples as the default matching input for checklist 3a and 3c.
+   - Do not re-derive a different permission tuple from raw call text when the normalized tuple is already present.
 
-2. For each `rbac_markers` resource that has no matching `api_calls` entry:
+2. For each `api_calls` entry where `required_permissions` is empty but `obj_type` suggests a variable-backed object:
+   - Call `go_file_context` on the controller file to resolve the variable's actual Go type
+   - Use that result to refine the concrete permission tuple before scoring RBAC coverage
+
+3. For each `rbac_manifest.permissions` tuple that has no matching required-permission tuple:
+   - Check `controller.ambiguity_signals` first. If unresolved receiver, unstructured, or rendered-object signals are present on the reconcile path, prefer `not-observed` for the unused-RBAC side unless the manifest grant is independently unjustified.
+   - Only continue to unused-RBAC verification when the required-permission set is concrete enough to enumerate controller usage.
+
+4. For each `rbac_markers` permission tuple that has no matching required-permission tuple or committed manifest permission:
    - Call `go_symbol_references` for the resource type name in the controller file
    - If no references found, do not immediately emit a 3a finding. First check whether the controller has `library_invocations` with `invoked_in_reconcile_loop=true` or generic apply helpers that may apply rendered `unstructured.Unstructured` objects.
-   - Use `go_file_context` / `go_search` on the reconcile path to look for generic apply helpers, `unstructured.Unstructured`, or rendered object slices/maps flowing into apply logic.
+   - Use `controller.ambiguity_signals` plus `go_file_context` / `go_search` on the reconcile path to look for generic apply helpers, `unstructured.Unstructured`, or rendered object slices/maps flowing into apply logic.
    - If rendered/generic apply paths are present and the concrete GVK set cannot be enumerated from evidence, treat the extra-RBAC side of 3a as ambiguous: prefer `not-observed`, or at most `Low` confidence with an explicit `notVerified` note that rendered resources could consume the permission.
-   - Only emit a scored unused-RBAC finding when no controller references and no rendered/generic apply ambiguity are visible.
+   - Only emit a scored unused-RBAC finding when no controller references, no committed-manifest match, and no rendered/generic apply ambiguity are visible.
 
-3. For any `api_calls` entry whose receiver is ambiguous (not clearly `r.Client` or similar):
+5. For any `api_calls` entry whose `receiver_resolution` is ambiguous (not clearly `r.Client` or similar):
    - Call `go_search` for the reconciler struct name to verify it embeds `client.Client`
 
-4. When `rbac_markers` and `rbac_manifest` disagree:
+6. When `rbac_markers` and `rbac_manifest` disagree:
    - Treat the manifest as the effective permission set for checklist 3a-d
    - Treat the marker/manifest mismatch as generator drift evidence, not as a reason to ignore the manifest
+
+7. For wildcard and event checks:
+   - Use `rbac_manifest.has_wildcard_*` for 3b
+   - Use `controller.event_usages[].required_permissions` matched against `rbac_manifest.permissions` for 3c
+   - Use `rbac_manifest.kind`, `rbac_manifest.permissions`, and scope evidence from API/manifests for 3d
 
 ### Error propagation verification (checklist 2a-c)
 
@@ -371,15 +429,34 @@ For each `controller` fact with one or more `library_invocations` entries where 
 1. Call `go_search` for the reconciler struct to see if it has both cached and uncached client fields
 2. For ambiguous `api_calls`, use `go_file_context` to determine which client field the receiver references
 
+### Spec-status contract verification (checklist 10a)
+
+For each controller fact:
+
+1. Check `controller.api_calls` for Update or Patch calls where the target GVK matches `controller.reconciles`
+2. If found, use `go_file_context` on the call site to distinguish:
+   - Status subresource updates (`.Status().Update()`, `.Status().Patch()`) — these are fine
+   - Metadata-only updates (annotations, labels, finalizers) — these are fine
+   - Spec field updates — these are a finding
+
+### Concurrency safety verification (checklist 11a)
+
+For each controller fact where `max_concurrent_reconciles > 1`:
+
+1. Call `go_file_context` on the reconciler struct definition file
+2. Inspect struct fields for mutable types: `map[...]...`, `[]...` (not from embedded interfaces), counters (`int`, `int64` without atomic)
+3. Check for synchronization primitives: `sync.Mutex`, `sync.RWMutex`, `sync.Map`, `atomic.*`
+4. Immutable fields are safe: `client.Client`, `logr.Logger`, `*runtime.Scheme`, `record.EventRecorder`
+
 ## Deterministic Procedure
 
 Run the assessment in this exact order:
 
 1. Resolve scope from explicit scope text or `$ARGUMENTS`.
-2. Run the static analyzer with `--skill architecture`. Load the full JSON output into context.
+2. Run the `analyze_controller` MCP tool with `skill=architecture`. Load the full JSON output into context.
 3. If `manifest.count` is 0, return `Not applicable`.
-4. Run the gopls verification protocol for checklist areas 2, 3, 4, 6, 7, and 9 as specified above.
-5. Walk every checklist item (1a through 9c, including 4d, 7d, and 7e) in order. For each item, record one disposition: `finding`, `pass`, or `not-observed` using the checklist criteria, the analyzer facts, and gopls verification results. Do not skip items.
+4. Run the gopls verification protocol for checklist areas 2, 3, 4, 6, 7, 9, 10, and 11 as specified above.
+5. Walk every checklist item (1a through 11a, including 4d, 7d, and 7e) in order. For each item, record one disposition: `finding`, `pass`, or `not-observed` using the checklist criteria, the analyzer facts, and gopls verification results. Do not skip items.
 6. Draft findings only from items with `finding` disposition. Every finding must trace to a specific checklist item ID (e.g., "4b"). Observations outside the checklist may appear in a `Notes` section but do not receive an ID, severity, or score impact.
 7. Apply anti-finding rules to dismiss any violations.
 8. Run one deterministic leaf validation pass in the same session:

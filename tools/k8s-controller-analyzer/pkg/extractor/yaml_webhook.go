@@ -28,6 +28,7 @@ func ExtractWebhookManifests(docs []YAMLDoc) []Fact {
 
 			entry.FailurePolicy = stringField(wh, "failurePolicy")
 			entry.SideEffects = stringField(wh, "sideEffects")
+			entry.ReinvocationPolicy = stringField(wh, "reinvocationPolicy")
 
 			if ts, ok := wh["timeoutSeconds"].(float64); ok {
 				entry.TimeoutSeconds = int(ts)

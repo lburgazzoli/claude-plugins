@@ -114,6 +114,17 @@ func TestExtractControllers(t *testing.T) {
 	if len(data.RBACMarkers) < 3 {
 		t.Errorf("expected at least 3 RBAC markers, got %d", len(data.RBACMarkers))
 	}
+	hasStatusPermission := false
+	for _, marker := range data.RBACMarkers {
+		for _, permission := range marker.Permissions {
+			if permission.Resource == "foos" && permission.Subresource == "status" {
+				hasStatusPermission = true
+			}
+		}
+	}
+	if !hasStatusPermission {
+		t.Fatalf("expected normalized foos/status permission in RBAC markers, got %+v", data.RBACMarkers)
+	}
 
 	if len(data.Owns) != 2 {
 		t.Errorf("expected 2 owns, got %d: %v", len(data.Owns), data.Owns)
@@ -133,6 +144,33 @@ func TestExtractControllers(t *testing.T) {
 
 	if len(data.ErrorReturns) < 1 {
 		t.Errorf("expected at least 1 error return, got %d", len(data.ErrorReturns))
+	}
+
+	var sawStatusUpdate bool
+	for _, call := range data.APICalls {
+		if call.Method != "Status.Update" {
+			continue
+		}
+		sawStatusUpdate = true
+		if call.MethodContext != "Reconcile" {
+			t.Fatalf("expected MethodContext Reconcile, got %+v", call)
+		}
+		if call.OperationClass != "statusWrite" {
+			t.Fatalf("expected statusWrite operation class, got %+v", call)
+		}
+		if call.ReceiverResolution != "receiver" {
+			t.Fatalf("expected receiver resolution to be receiver, got %+v", call)
+		}
+		if len(call.RequiredPermissions) != 1 {
+			t.Fatalf("expected one required permission, got %+v", call)
+		}
+		permission := call.RequiredPermissions[0]
+		if permission.Resource != "foos" || permission.Subresource != "status" {
+			t.Fatalf("expected foos/status required permission, got %+v", permission)
+		}
+	}
+	if !sawStatusUpdate {
+		t.Fatalf("expected Status.Update api call, got %+v", data.APICalls)
 	}
 }
 
@@ -492,6 +530,56 @@ func (r *FooReconciler) Reconcile(ctx Context, req Request) (Result, error) {
 	}
 }
 
+func TestExtractControllers_HelperMethodSignalsAreReachable(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	controllerPkg := newSyntheticPackage(
+		t,
+		repoRoot,
+		"example.com/project/controllers",
+		map[string]string{
+			"controllers/reconcile.go": `package controllers
+type Context struct{}
+type Request struct{}
+type Result struct{}
+
+type Foo struct{}
+type FooReconciler struct{}
+
+func (r *FooReconciler) Update(any, any) error { return nil }
+
+func (r *FooReconciler) Reconcile(ctx Context, req Request) (Result, error) {
+	return Result{}, r.ensureFoo()
+}
+
+func (r *FooReconciler) ensureFoo() error {
+	return r.Update(nil, &Foo{})
+}
+`,
+		},
+	)
+
+	facts := ExtractControllers([]*packages.Package{controllerPkg}, repoRoot)
+	if len(facts) != 1 {
+		t.Fatalf("expected 1 controller fact, got %d", len(facts))
+	}
+
+	data, ok := facts[0].Data.(ControllerData)
+	if !ok {
+		t.Fatalf("expected ControllerData, got %T", facts[0].Data)
+	}
+
+	if len(data.APICalls) != 1 {
+		t.Fatalf("expected 1 reachable api call, got %+v", data.APICalls)
+	}
+	if data.APICalls[0].MethodContext != "ensureFoo" {
+		t.Fatalf("expected helper method context ensureFoo, got %+v", data.APICalls[0])
+	}
+	if data.APICalls[0].ResolvedKind != "Foo" {
+		t.Fatalf("expected helper call to resolve kind Foo, got %+v", data.APICalls[0])
+	}
+}
+
 func TestExtractControllers_RetryOnConflictWrapsStatusUpdate(t *testing.T) {
 	repoRoot := t.TempDir()
 
@@ -558,6 +646,67 @@ func (r *FooReconciler) Reconcile(ctx Context, req Request) (Result, error) {
 	}
 	if data.StatusUpdateSites[0].GuardKind != "RetryOnConflict" {
 		t.Errorf("expected guard kind RetryOnConflict, got %s", data.StatusUpdateSites[0].GuardKind)
+	}
+}
+
+func TestExtractControllers_UnstructuredUsageEmitsAmbiguitySignal(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	controllerPkg := newSyntheticPackage(
+		t,
+		repoRoot,
+		"example.com/project/controllers",
+		map[string]string{
+			"controllers/reconcile.go": `package controllers
+import "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+type Context struct{}
+type Request struct{}
+type Result struct{}
+
+type FooReconciler struct{}
+
+func (r *FooReconciler) Patch(any, any) error { return nil }
+
+func (r *FooReconciler) Reconcile(ctx Context, req Request) (Result, error) {
+	return Result{}, r.Patch(nil, &unstructured.Unstructured{})
+}
+`,
+		},
+	)
+
+	facts := ExtractControllers([]*packages.Package{controllerPkg}, repoRoot)
+	if len(facts) != 1 {
+		t.Fatalf("expected 1 controller fact, got %d", len(facts))
+	}
+
+	data, ok := facts[0].Data.(ControllerData)
+	if !ok {
+		t.Fatalf("expected ControllerData, got %T", facts[0].Data)
+	}
+
+	if len(data.APICalls) != 1 {
+		t.Fatalf("expected 1 api call, got %+v", data.APICalls)
+	}
+	if data.APICalls[0].ObjectResolution != "unstructured" {
+		t.Fatalf("expected unstructured object resolution, got %+v", data.APICalls[0])
+	}
+	if len(data.APICalls[0].RequiredPermissions) != 0 {
+		t.Fatalf("expected no concrete permissions for unstructured call, got %+v", data.APICalls[0])
+	}
+
+	foundUnstructuredSignal := false
+	foundIdentitySignal := false
+	for _, signal := range data.AmbiguitySignals {
+		if signal.Kind == "usesUnstructured" {
+			foundUnstructuredSignal = true
+		}
+		if signal.Kind == "resourceIdentityUnresolved" {
+			foundIdentitySignal = true
+		}
+	}
+	if !foundUnstructuredSignal || !foundIdentitySignal {
+		t.Fatalf("expected unstructured and unresolved-identity ambiguity signals, got %+v", data.AmbiguitySignals)
 	}
 }
 

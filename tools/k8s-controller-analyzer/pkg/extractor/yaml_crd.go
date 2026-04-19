@@ -53,6 +53,16 @@ func ExtractCRDManifests(docs []YAMLDoc) []Fact {
 			})
 		}
 
+		// Compute served version count
+		servedCount := 0
+		for _, v := range data.Versions {
+			if v.Served {
+				servedCount++
+			}
+		}
+		data.ServedVersionCount = servedCount
+		data.HasMultipleServed = servedCount > 1
+
 		facts = append(facts, NewFact(
 			RuleCRDManifest,
 			KindCRDManifest,

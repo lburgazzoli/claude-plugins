@@ -1,6 +1,17 @@
 ---
 name: k8s.controller-api
 description: Review Kubernetes CRD definitions, API types, webhooks, and markers for compliance with upstream Kubernetes API conventions.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Grep
+  - Glob
+  - mcp__k8s-controller-analyzer__analyze_controller
+  - mcp__gopls__go_file_context
+  - mcp__gopls__go_symbol_references
+  - mcp__gopls__go_search
+  - mcp__gopls__go_package_api
+  - LSP
 ---
 
 # Kubernetes API Conventions Assessment
@@ -38,9 +49,7 @@ Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as
 
 ### Run
 
-```bash
-<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --skill api --format json
-```
+Use the `analyze_controller` MCP tool with `repo_path` set to the repository root and `skill` set to `api`.
 
 If the orchestrator (`k8s.controller-assessment`) has already run the analyzer and the JSON is loaded in context, skip the run step.
 
@@ -80,10 +89,26 @@ Do not re-derive facts that the analyzer already provides.
 | `webhook.failure_policy` + `webhook.side_effects` + `webhook.timeout_seconds` | 3a-c |
 | `crd_type.has_root_marker` | 4e |
 | `crd_field.markers` + `crd_type` | 4a-d |
+| `crd_field.list_type` + `crd_field.list_map_keys` | 5a-b |
+| `crd_field.cel_rules` + `crd_type.cel_rules` | 6a-c |
+| `webhook` (validating) + `crd_field.cel_rules` | 6a |
+| `webhook` (defaulting) + `crd_field.markers` (defaults) | 7a-c |
+| `webhook_manifest` (mutating) | 7d |
+| `crd_field.cel_rules` + `crd_field.field_type` + `crd_field.markers` (MaxItems) | 8a |
+| `crd_field.cel_rules` + `crd_field.is_optional` | 8b |
 
 ## gopls Verification Protocol
 
 Use gopls MCP tools to verify and enrich the static analyzer's structural findings. These verification steps are **mandatory** in deterministic mode.
+
+If the `gopls-lsp` MCP server is unavailable, use the built-in `LSP` tool with gopls as a fallback:
+
+| MCP tool | LSP equivalent |
+|----------|---------------|
+| `go_file_context` | `documentSymbol` on the file, then `hover` on specific symbols |
+| `go_symbol_references` | `findReferences` at the symbol's position |
+| `go_search` | `workspaceSymbol` with the symbol name |
+| `go_package_api` | `documentSymbol` on the package's Go files |
 
 ### Field type verification (checklist 1d-g)
 
@@ -112,6 +137,46 @@ For each `webhook` fact:
 1. Call `go_symbol_references` for the webhook handler methods (`Default`, `ValidateCreate`, etc.)
 2. In the handler body, check for external calls that could block:
    - Use `go_file_context` on the handler file to see imports (HTTP clients, external services)
+
+### List type verification (checklist 5a-b)
+
+For each `crd_field` fact where `field_type` starts with `[]`:
+
+1. If `list_type` is empty, check whether the field is a slice of a struct type (as opposed to `[]string` or `[]int` which are typically atomic)
+   - Call `go_file_context` on the API types file to confirm the element type
+   - Struct-element slices without `+listType` are a 5a finding
+2. If `list_type` is "map" and `list_map_keys` is empty, this is a 5b finding
+
+### CEL and immutability verification (checklist 6a-c)
+
+1. For each `webhook` fact with type "validating":
+   - Call `go_file_context` on the webhook handler to inspect validation logic
+   - If the validation is simple enough for CEL (field range, enum, cross-field comparison), assess for 6a
+2. For each `crd_field.cel_rules` entry where `uses_old_self` is true:
+   - Check whether a non-transition validation exists for the same field (another CEL rule without `oldSelf`, or a webhook) for 6b
+3. For 6c, use `go_search` for comments or documentation mentioning "immutable" near spec fields, then verify enforcement exists
+
+### Defaulting webhook verification (checklist 7a-c)
+
+For each `webhook` fact with type "defaulting":
+
+1. Call `go_file_context` on the webhook handler file to find the `Default()` method
+2. For 7a: inspect whether field assignments in `Default()` are guarded by nil/zero checks (e.g., `if r.Spec.Replicas == nil { r.Spec.Replicas = ptr.To(int32(1)) }`)
+3. For 7b: compare default values set in `Default()` against `+kubebuilder:default` markers on the same fields from `crd_field.markers`
+4. For 7c: identify fields set by `Default()` and check whether they are spec fields that a user would normally control (fields without `+kubebuilder:default` and without clear "system default" semantics)
+
+### Webhook reinvocation verification (checklist 7d)
+
+For each `webhook_manifest` entry with mutating webhooks:
+
+1. Check whether `reinvocationPolicy` is present in the webhook configuration YAML
+
+### CEL cost and safety verification (checklist 8a-b)
+
+For each `crd_field` fact with `cel_rules`:
+
+1. For 8a: if `field_type` starts with `[]` or `map[`, check whether the field has a `+kubebuilder:validation:MaxItems` or `+kubebuilder:validation:MaxProperties` marker in its `markers` list. If no size bound exists and the CEL rule uses iteration patterns (`self.items.all`, `self.exists`, `self.filter`, `self.map`), flag it.
+2. For 8b: if the field is `is_optional` and the CEL rule text references sub-fields of the optional field without a `has()` guard, flag it. Use `go_file_context` on the API type file to confirm the field is a pointer type.
 
 ### Marker correctness verification (checklist 4a-f)
 
@@ -278,15 +343,89 @@ Skip this area if no admission webhook assets exist in scope.
   - pass: committed CRD manifests are consistent with the current type definitions and markers
   - not-observed: no committed CRD manifests in scope
 
+### 5. List Type and Merge Semantics
+
+- **5a. Slice fields have +listType marker**
+  - title: "Slice field missing +listType marker"
+  - finding: a slice field in a CRD type lacks a `+listType` marker, causing undefined merge behavior with Server-Side Apply and strategic merge patch (`Major`)
+  - pass: all slice fields have `+listType={atomic,set,map}` marker
+  - not-observed: no slice fields in scope
+
+- **5b. Map-type lists have +listMapKey**
+  - title: "Map-type list missing +listMapKey"
+  - finding: a slice field with `+listType=map` lacks a `+listMapKey` marker, preventing SSA from identifying individual list elements for merge (`Critical`)
+  - pass: all `+listType=map` fields have corresponding `+listMapKey` markers
+  - not-observed: no map-type list fields in scope
+
+### 6. CEL Validation Rules
+
+- **6a. CEL rules are present where validation webhooks could be replaced**
+  - title: "Validation webhook used where CEL rule would suffice"
+  - finding: a validating webhook performs simple field validation (range checks, enum enforcement, cross-field comparisons) that could be expressed as a CEL validation rule, avoiding webhook round-trip overhead (`Minor`)
+  - pass: CEL rules are used for simple validations, OR webhook validation involves complex logic requiring Go code
+  - not-observed: no validation webhooks or CEL rules in scope
+
+- **6b. CEL transition rules use oldSelf correctly**
+  - title: "CEL transition rule missing CREATE-path validation"
+  - finding: a CEL transition rule using `oldSelf` is the sole validation for a field, leaving the CREATE path unvalidated since transition rules only fire on UPDATE (`Major`)
+  - pass: transition rules are complemented by non-transition validation for the CREATE path
+  - not-observed: no CEL transition rules in scope
+
+- **6c. Field immutability is enforced**
+  - title: "Immutable field lacks enforcement"
+  - finding: a spec field is treated as immutable by the controller (ignored on update, or documented as immutable) but has no enforcement via CEL transition rule or validating webhook (`Major`)
+  - pass: immutable fields are enforced via `+kubebuilder:validation:XValidation:rule="self == oldSelf"` or equivalent webhook validation
+  - not-observed: no evidence of immutable fields in scope
+
+### 7. Defaulting and Admission Semantic Correctness
+
+- **7a. Defaulting webhook is idempotent**
+  - title: "Non-idempotent defaulting webhook"
+  - finding: the `Default()` method modifies fields unconditionally without checking their current value, meaning applying it twice produces different results or overwrites user-set values (`Major`)
+  - pass: `Default()` checks whether fields are already set (nil/zero checks) before applying defaults
+  - not-observed: no defaulting webhook in scope
+
+- **7b. Schema defaults are consistent with webhook defaults**
+  - title: "Schema defaults inconsistent with webhook defaults"
+  - finding: `+kubebuilder:default` markers set a different value than the `Default()` webhook method for the same field, creating order-dependent behavior (`Major`)
+  - pass: schema defaults and webhook defaults agree, OR only one mechanism is used
+  - not-observed: no defaulting webhook or no schema defaults in scope
+
+- **7c. Defaulting does not set user-owned fields**
+  - title: "Defaulting webhook sets user-owned spec fields"
+  - finding: the `Default()` method unconditionally writes to spec fields that the user should control, causing SSA field ownership conflicts where the webhook field manager competes with the user (`Major`)
+  - pass: `Default()` only sets fields that have no user-meaningful zero value, OR uses SSA-aware patterns
+  - not-observed: no defaulting webhook in scope
+
+- **7d. Webhook reinvocation policy is explicit**
+  - title: "Mutating webhook missing reinvocation policy"
+  - finding: a mutating webhook configuration omits `reinvocationPolicy`, meaning mutations may be overwritten by later webhooks without re-evaluation (`Minor`)
+  - pass: `reinvocationPolicy` is explicitly set on mutating webhook configurations
+  - not-observed: no mutating webhook configurations in scope
+
+### 8. CEL Cost and Safety
+
+- **8a. CEL rules on unbounded collections have size limits**
+  - title: "CEL rule on unbounded collection without size limit"
+  - finding: a CEL validation rule operates on a slice or map field that lacks `+kubebuilder:validation:MaxItems` or `+kubebuilder:validation:MaxProperties`, causing the API server to reject the CRD at registration due to cost budget overflow (`Critical`)
+  - pass: all fields with CEL rules that iterate over collections have explicit size bounds
+  - not-observed: no CEL rules on collection fields in scope
+
+- **8b. CEL expressions guard against null optional fields**
+  - title: "CEL expression accesses optional field without null guard"
+  - finding: a CEL expression accesses a field marked `+optional` (pointer type) without a `has()` guard, causing CEL evaluation failures on nil values (`Major`)
+  - pass: all CEL expressions on optional fields use `has(self.field)` or equivalent null guards
+  - not-observed: no CEL rules on optional fields in scope
+
 ## Deterministic Procedure
 
 Run the assessment in this exact order:
 
 1. Resolve scope from explicit scope text or `$ARGUMENTS`.
-2. Run the static analyzer with `--skill api`. Load the full JSON output into context.
+2. Run the `analyze_controller` MCP tool with `skill=api`. Load the full JSON output into context.
 3. If `manifest.count` is 0, return `Not applicable`.
-4. Run the gopls verification protocol for checklist areas 1, 2, 3, and 4 as specified above.
-5. Walk every checklist item (1a through 4f) in order. For each item, record a disposition: `finding`, `pass`, or `not-observed` using the criteria defined above, the analyzer facts, and gopls verification results. Do not skip items.
+4. Run the gopls verification protocol for checklist areas 1, 2, 3, 4, 5, 6, 7, and 8 as specified above.
+5. Walk every checklist item (1a through 8b) in order. For each item, record a disposition: `finding`, `pass`, or `not-observed` using the criteria defined above, the analyzer facts, and gopls verification results. Do not skip items.
 6. Draft findings only from items with `finding` disposition. Every finding must trace to a specific checklist item ID (e.g., "1d"). Observations outside the checklist may appear in a `Notes` section but do not receive an ID, severity, or score impact.
 7. Run one deterministic leaf validation pass in the same session:
    - dismiss findings unsupported by cited evidence

@@ -28,16 +28,33 @@ func ExtractRBACManifests(docs []YAMLDoc) []Fact {
 				Resources:     toStringSlice(rule["resources"]),
 				Verbs:         toStringSlice(rule["verbs"]),
 				ResourceNames: toStringSlice(rule["resourceNames"]),
+				Permissions: normalizePermissionTuples(
+					toStringSlice(rule["apiGroups"]),
+					toStringSlice(rule["resources"]),
+					toStringSlice(rule["verbs"]),
+					toStringSlice(rule["resourceNames"]),
+					scopeForRBACManifest(doc.Kind),
+					doc.RelPath,
+					0,
+				),
 			}
 
 			for _, v := range rd.Verbs {
 				if v == "*" {
 					data.HasWildcard = true
+					data.HasWildcardVerb = true
+				}
+			}
+			for _, group := range rd.APIGroups {
+				if group == "*" {
+					data.HasWildcard = true
+					data.HasWildcardGroup = true
 				}
 			}
 			for _, res := range rd.Resources {
 				if res == "*" {
 					data.HasWildcard = true
+					data.HasWildcardResource = true
 				}
 				if res == "events" {
 					data.HasEvents = true
@@ -45,6 +62,7 @@ func ExtractRBACManifests(docs []YAMLDoc) []Fact {
 			}
 
 			data.Rules = append(data.Rules, rd)
+			data.Permissions = append(data.Permissions, rd.Permissions...)
 		}
 
 		facts = append(facts, NewFact(

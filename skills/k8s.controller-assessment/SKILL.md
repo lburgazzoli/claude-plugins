@@ -1,11 +1,25 @@
 ---
 name: k8s.controller-assessment
-description: Comprehensive Kubernetes controller assessment combining architecture review, API conventions audit, and production readiness evaluation.
+description: Comprehensive Kubernetes controller assessment combining architecture review, API conventions audit, lifecycle safety, and production readiness evaluation.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash
+  - Agent
+  - Skill
+  - mcp__k8s-controller-analyzer__analyze_controller
+  - mcp__gopls__go_file_context
+  - mcp__gopls__go_symbol_references
+  - mcp__gopls__go_search
+  - mcp__gopls__go_package_api
+  - LSP
 ---
 
 # Kubernetes Controller Assessment
 
-Perform a comprehensive assessment of a Kubernetes controller by invoking three focused skills and merging their results into one deterministic report.
+Perform a comprehensive assessment of a Kubernetes controller by invoking four focused skills and merging their results into one deterministic report.
 
 ## References
 
@@ -20,9 +34,9 @@ Consult [reproducible-assessments.md](../../references/reproducible-assessments.
   - `--scope=<list>`
   - `--mode=deterministic`
   - `--mode=exploratory`
-- Accepted `--scope` values are `architecture`, `api`, and `production-readiness`.
+- Accepted `--scope` values are `architecture`, `api`, `lifecycle`, and `production-readiness`.
 - Default mode is `--mode=deterministic`.
-- If no `--scope` is provided, run all three sub-skills.
+- If no `--scope` is provided, run all four sub-skills.
 
 ## Input Validation
 
@@ -31,7 +45,7 @@ Consult [reproducible-assessments.md](../../references/reproducible-assessments.
 - Validate `--scope=<list>` strictly:
   - split by comma
   - trim whitespace
-  - accepted values are exactly `architecture`, `api`, `production-readiness`
+  - accepted values are exactly `architecture`, `api`, `lifecycle`, `production-readiness`
   - if any value is invalid, stop and ask for confirmation
 
 ## Pre-Assessment Setup
@@ -40,11 +54,9 @@ Before invoking any child skill, run the static analyzer once. This avoids tripl
 
 Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads passed to child skills.
 
-```bash
-<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --format json
-```
+Use the `analyze_controller` MCP tool with `repo_path` set to the repository root (omit `skill` since each child skill needs different manifest categories).
 
-Load the full JSON output into context. Child skills detect the already-loaded analyzer JSON and skip their own run step. Note: the orchestrator runs without `--skill` since each child skill needs different manifest categories. Each child skill will reference the loaded facts directly.
+Load the full JSON output into context. Child skills detect the already-loaded analyzer JSON and skip their own run step. Each child skill will reference the loaded facts directly.
 
 ## Child Invocation Rules
 
@@ -52,6 +64,7 @@ Resolve selected sub-skills first:
 
 - `architecture` -> `/k8s.controller-architecture`
 - `api` -> `/k8s.controller-api`
+- `lifecycle` -> `/k8s.controller-lifecycle`
 - `production-readiness` -> `/k8s.controller-production-readiness`
 
 Build child arguments in this order:
@@ -68,6 +81,7 @@ In deterministic mode:
 1. Run child skills sequentially in this fixed order:
    - `k8s.controller-architecture`
    - `k8s.controller-api`
+   - `k8s.controller-lifecycle`
    - `k8s.controller-production-readiness`
 
 
@@ -113,6 +127,7 @@ After child skills complete and findings are enriched, merge in this exact order
 7. If merged severities tie, use this `primarySource` priority:
    - `k8s.controller-architecture`
    - `k8s.controller-api`
+   - `k8s.controller-lifecycle`
    - `k8s.controller-production-readiness`
 8. Copy `title`, `what`, `area`, `why`, `fix`, and `confidence` from the `primarySource`.
 9. Union `where` and `notVerified`, preserving sorted order.
@@ -135,17 +150,19 @@ The orchestrator second pass must not introduce new findings.
 Recompute child scores from final merged findings:
 
 - Architecture uses its category-weighted model. Map each finding's `area` to a category:
-  - Category A (weight 0.60): Reconciliation Idempotency and State Handling, Error Handling and Requeue Strategy, RBAC Least Privilege and Security, Status, Conditions, and Observed Generation, Ownership, Finalizers, and Cleanup Logic, Portability and Vendor API Dependencies
+  - Category A (weight 0.60): Reconciliation Idempotency and State Handling, Error Handling and Requeue Strategy, RBAC Least Privilege and Security, Status, Conditions, and Observed Generation, Ownership, Finalizers, and Cleanup Logic, Portability and Vendor API Dependencies, Spec-Status Contract Boundary, Concurrency Safety
   - Category B (weight 0.40): Resource Management and API Efficiency, Performance and Cache Usage, Cache Consistency and Client Type Alignment
   - If an Architecture finding's area does not match any of these, keep the finding in the report but note reduced-confidence scoring in the summary
 - API uses flat deductions (Critical -20, Major -10, Minor -3, floor 0)
+- Lifecycle uses flat deductions (Critical -20, Major -10, Minor -3, floor 0)
 - Production Readiness uses flat deductions (Critical -20, Major -10, Minor -3, floor 0)
 
 Overall weights:
 
-- Architecture: `0.50`
-- API: `0.25`
-- Production Readiness: `0.25`
+- Architecture: `0.35`
+- API: `0.20`
+- Lifecycle: `0.25`
+- Production Readiness: `0.20`
 
 If one or more sub-skills are `Not applicable`, renormalize the remaining weights to sum to `1.0`.
 Show arithmetic for each contributing score and for the weighted overall score.
@@ -180,6 +197,7 @@ Score table:
 | **Overall Score** | 0-100 or `Not applicable` |
 | **Architecture** | 0-100 or `Not applicable` |
 | **API Conventions** | 0-100 or `Not applicable` |
+| **Lifecycle** | 0-100 or `Not applicable` |
 | **Production Readiness** | 0-100 or `Not applicable` |
 
 Severity count table:

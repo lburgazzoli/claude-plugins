@@ -1,6 +1,17 @@
 ---
 name: k8s.controller-production-readiness
 description: Evaluate a Kubernetes controller's production readiness by reviewing test coverage, observability, and deployment hardening.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Grep
+  - Glob
+  - mcp__k8s-controller-analyzer__analyze_controller
+  - mcp__gopls__go_file_context
+  - mcp__gopls__go_symbol_references
+  - mcp__gopls__go_search
+  - mcp__gopls__go_package_api
+  - LSP
 ---
 
 # Kubernetes Controller Production Readiness Assessment
@@ -38,9 +49,7 @@ Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as
 
 ### Run
 
-```bash
-<plugin-root>/scripts/k8s-controller-analyzer.sh <repo-root> --skill production-readiness --format json
-```
+Use the `analyze_controller` MCP tool with `repo_path` set to the repository root and `skill` set to `production-readiness`.
 
 If the orchestrator (`k8s.controller-assessment`) has already run the analyzer and the JSON is loaded in context, skip the run step.
 
@@ -77,6 +86,15 @@ The analyzer provides facts relevant to this skill:
 ## gopls Verification Protocol
 
 Use gopls MCP tools to verify the static analyzer's findings. These steps are **mandatory** in deterministic mode.
+
+If the `gopls-lsp` MCP server is unavailable, use the built-in `LSP` tool with gopls as a fallback:
+
+| MCP tool | LSP equivalent |
+|----------|---------------|
+| `go_file_context` | `documentSymbol` on the file, then `hover` on specific symbols |
+| `go_symbol_references` | `findReferences` at the symbol's position |
+| `go_search` | `workspaceSymbol` with the symbol name |
+| `go_package_api` | `documentSymbol` on the package's Go files |
 
 ### Logging verification (checklist 2a)
 
@@ -183,7 +201,7 @@ Do not emit findings for:
 Run the assessment in this exact order:
 
 1. Resolve scope from explicit scope text or `$ARGUMENTS`.
-2. Run the static analyzer with `--skill production-readiness`. Load the full JSON output into context.
+2. Run the `analyze_controller` MCP tool with `skill=production-readiness`. Load the full JSON output into context.
 3. If `manifest.count` is 0, return `Not applicable`.
 4. For test coverage checks (1a-c), read the test files listed in the `test_discovery` fact from the manifest entries to examine test patterns, table-driven tests, and timing usage.
 5. Run the gopls verification protocol for checklist areas 2a and 2b as specified above.

@@ -72,6 +72,7 @@ type methodDeclInfo struct {
 
 type packageIndex struct {
 	fset    *token.FileSet
+	pkg     *packages.Package
 	pkgPath string
 	types   map[string]typeDeclInfo
 	methods map[string]map[string]methodDeclInfo
@@ -106,6 +107,7 @@ func buildPackageIndex(
 ) *packageIndex {
 	index := &packageIndex{
 		fset:    pkg.Fset,
+		pkg:     pkg,
 		pkgPath: pkg.PkgPath,
 		types:   map[string]typeDeclInfo{},
 		methods: map[string]map[string]methodDeclInfo{},
@@ -219,6 +221,16 @@ func buildControllerData(
 		Name: rec.name,
 	}
 
+	// Try to infer reconciled kind from struct name (FooReconciler -> Foo)
+	data.Reconciles.Kind = strings.TrimSuffix(rec.name, "Reconciler")
+
+	// Try to find group/version from api packages
+	data.Reconciles.Group, data.Reconciles.Version = inferGroupVersion(
+		pkgs,
+		data.Reconciles.Kind,
+		repoPath,
+	)
+
 	// Extract RBAC markers from Reconcile method and struct declaration
 	data.RBACMarkers = extractRBACMarkers(index, rec.name)
 
@@ -232,13 +244,20 @@ func buildControllerData(
 		data.FinalizerOps = extractFinalizerOps(reconcileFunc, fset)
 		data.OwnerRefOps = extractOwnerRefOps(reconcileFunc, fset)
 		data.ExternalWriteOps = extractWriteOps(reconcileFunc, fset)
-		data.APICalls = extractAPICalls(reconcileFunc, fset)
 		data.StatusConditionSets = extractStatusConditions(reconcileFunc, fset)
-		data.EventUsages = extractEventUsages(reconcileFunc, fset)
 		data.NotFoundHandlers = extractNotFoundHandlers(reconcileFunc, fset)
 		data.RequeueOps = extractRequeueOps(reconcileFunc, fset)
 		data.ErrorReturns = extractErrorReturns(reconcileFunc, fset)
 	}
+
+	data.APICalls, data.EventUsages, data.AmbiguitySignals = collectControllerSignals(
+		callGraph,
+		index,
+		rec,
+		repoPath,
+		pkgs,
+		data.Reconciles,
+	)
 
 	// Extract retry ops and status update sites from ALL methods on the reconciler.
 	// Retry wrappers commonly live in helper methods (e.g., updateStatus).
@@ -276,20 +295,117 @@ func buildControllerData(
 	data.StatusUpdateSites = allStatusUpdateSites
 	data.LibraryInvocations = allLibraryInvocations
 
+	for _, invocation := range allLibraryInvocations {
+		if !invocation.InvokedInReconcileLoop {
+			continue
+		}
+		data.AmbiguitySignals = append(data.AmbiguitySignals, AmbiguitySignal{
+			Kind:   "usesRenderedObjects",
+			Detail: invocation.Family + ":" + invocation.Call,
+			File:   rec.relPath,
+			Line:   invocation.Line,
+		})
+	}
+	data.AmbiguitySignals = dedupeAmbiguitySignals(data.AmbiguitySignals)
+
 	// Extract predicate usage from SetupWithManager
 	data.PredicateUsages = extractPredicateUsages(index, rec.name)
 
-	// Try to infer reconciled kind from struct name (FooReconciler -> Foo)
-	data.Reconciles.Kind = strings.TrimSuffix(rec.name, "Reconciler")
-
-	// Try to find group/version from api packages
-	data.Reconciles.Group, data.Reconciles.Version = inferGroupVersion(
-		pkgs,
-		data.Reconciles.Kind,
-		repoPath,
-	)
+	// Extract MaxConcurrentReconciles from SetupWithManager
+	data.MaxConcurrentReconciles = extractMaxConcurrentReconciles(index, rec.name)
 
 	return data
+}
+
+func collectControllerSignals(
+	callGraph *repoCallGraph,
+	index *packageIndex,
+	rec reconcilerInfo,
+	repoPath string,
+	pkgs []*packages.Package,
+	target ReconcilesTarget,
+) ([]APICall, []EventUsage, []AmbiguitySignal) {
+	var calls []APICall
+	var events []EventUsage
+	var ambiguities []AmbiguitySignal
+
+	processFunction := func(
+		pkg *packages.Package,
+		relPath string,
+		fd *ast.FuncDecl,
+		methodContext string,
+	) {
+		if fd == nil {
+			return
+		}
+		receiverNames := receiverNames(fd)
+		fnCalls, fnAmbiguities := extractAPICalls(
+			pkg,
+			fd,
+			index.fset,
+			relPath,
+			methodContext,
+			target,
+			receiverNames,
+			pkgs,
+			repoPath,
+		)
+		calls = append(calls, fnCalls...)
+		ambiguities = append(ambiguities, fnAmbiguities...)
+		events = append(events, extractEventUsages(fd, index.fset, relPath)...)
+	}
+
+	reconcileID := repoFunctionID(
+		index.pkgPath,
+		repoReceiverKey(index.pkgPath, rec.name),
+		FuncReconcile,
+	)
+	reachable := map[string]bool{}
+	if callGraph != nil {
+		reachable = callGraph.reachableFrom(reconcileID)
+	}
+
+	if len(reachable) == 0 {
+		if method, ok := index.method(rec.name, FuncReconcile); ok {
+			processFunction(index.pkg, method.relPath, method.decl, FuncReconcile)
+		}
+	} else {
+		nodeIDs := make([]string, 0, len(reachable))
+		for nodeID, isReachable := range reachable {
+			if isReachable {
+				nodeIDs = append(nodeIDs, nodeID)
+			}
+		}
+		sort.Strings(nodeIDs)
+		for _, nodeID := range nodeIDs {
+			fn, ok := callGraph.functions[nodeID]
+			if !ok {
+				continue
+			}
+			processFunction(fn.pkg, fn.relPath, fn.decl, fn.name)
+		}
+	}
+
+	sort.Slice(calls, func(i, j int) bool {
+		if calls[i].File != calls[j].File {
+			return calls[i].File < calls[j].File
+		}
+		if calls[i].Line != calls[j].Line {
+			return calls[i].Line < calls[j].Line
+		}
+		return calls[i].Method < calls[j].Method
+	})
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].File != events[j].File {
+			return events[i].File < events[j].File
+		}
+		if events[i].Line != events[j].Line {
+			return events[i].Line < events[j].Line
+		}
+		return events[i].Method < events[j].Method
+	})
+
+	return calls, events, dedupeAmbiguitySignals(ambiguities)
 }
 
 func extractRBACMarkers(
@@ -303,7 +419,7 @@ func extractRBACMarkers(
 		doc := DocOrNearby(method.file, index.fset, method.decl.Pos(), method.decl.Doc)
 		for _, m := range ExtractMarkersFromDoc(doc, index.fset) {
 			if m.Name == MarkerRBAC {
-				markers = append(markers, rbacMarkerFromArgs(m))
+				markers = append(markers, rbacMarkerFromArgs(m, method.relPath))
 			}
 		}
 	}
@@ -313,7 +429,7 @@ func extractRBACMarkers(
 		doc := DocOrNearby(typeInfo.file, index.fset, typeInfo.spec.Pos(), typeInfo.spec.Doc)
 		for _, m := range ExtractMarkersFromDoc(doc, index.fset) {
 			if m.Name == MarkerRBAC {
-				markers = append(markers, rbacMarkerFromArgs(m))
+				markers = append(markers, rbacMarkerFromArgs(m, typeInfo.relPath))
 			}
 		}
 	}
@@ -1015,7 +1131,7 @@ func extractConditionTypeAndOG(expr ast.Expr) (string, bool) {
 	return condType, hasOG
 }
 
-func rbacMarkerFromArgs(m Marker) RBACMarker {
+func rbacMarkerFromArgs(m Marker, relPath string) RBACMarker {
 	return RBACMarker{
 		Verbs:         m.Args["verbs"],
 		Resource:      m.Args["resources"],
@@ -1023,14 +1139,31 @@ func rbacMarkerFromArgs(m Marker) RBACMarker {
 		ResourceNames: m.Args["resourceNames"],
 		Namespace:     m.Args["namespace"],
 		Line:          m.Line,
+		Permissions: normalizePermissionTuples(
+			splitCSV(m.Args["groups"]),
+			splitCSV(m.Args["resources"]),
+			splitCSV(m.Args["verbs"]),
+			splitCSV(m.Args["resourceNames"]),
+			scopeFromNamespace(m.Args["namespace"]),
+			relPath,
+			m.Line,
+		),
 	}
 }
 
 func extractAPICalls(
+	pkg *packages.Package,
 	fd *ast.FuncDecl,
 	fset *token.FileSet,
-) []APICall {
+	relPath string,
+	methodContext string,
+	target ReconcilesTarget,
+	receiverNames map[string]bool,
+	pkgs []*packages.Package,
+	repoPath string,
+) ([]APICall, []AmbiguitySignal) {
 	var calls []APICall
+	var ambiguities []AmbiguitySignal
 	clientMethods := map[string]bool{
 		MethodGet: true, MethodList: true, MethodCreate: true, MethodUpdate: true,
 		MethodDelete: true, MethodPatch: true,
@@ -1057,16 +1190,29 @@ func extractAPICalls(
 					if id, ok := innerSel.X.(*ast.Ident); ok {
 						receiver = id.Name
 					}
+					line := fset.Position(call.Pos()).Line
 					objType := ""
+					var objExpr ast.Expr
 					if len(call.Args) >= 2 {
+						objExpr = call.Args[1]
 						objType = exprToString(call.Args[1])
 					}
-					calls = append(calls, APICall{
-						Method:   "Status." + methodName,
-						Receiver: receiver,
-						ObjType:  objType,
-						Line:     fset.Position(call.Pos()).Line,
-					})
+					apiCall, callAmbiguities := buildAPICallSignal(
+						pkg,
+						relPath,
+						methodContext,
+						"Status."+methodName,
+						receiver,
+						objType,
+						objExpr,
+						line,
+						target,
+						receiverNames,
+						pkgs,
+						repoPath,
+					)
+					calls = append(calls, apiCall)
+					ambiguities = append(ambiguities, callAmbiguities...)
 					return true
 				}
 			}
@@ -1082,30 +1228,44 @@ func extractAPICalls(
 		}
 
 		objType := ""
+		var objExpr ast.Expr
 		// For Get(ctx, key, obj) the object is the 3rd arg
 		// For Create/Update/Delete(ctx, obj) the object is the 2nd arg
 		switch methodName {
 		case MethodGet:
 			if len(call.Args) >= 3 {
+				objExpr = call.Args[2]
 				objType = exprToString(call.Args[2])
 			}
 		default:
 			if len(call.Args) >= 2 {
+				objExpr = call.Args[1]
 				objType = exprToString(call.Args[1])
 			}
 		}
 
-		calls = append(calls, APICall{
-			Method:   methodName,
-			Receiver: receiver,
-			ObjType:  objType,
-			Line:     fset.Position(call.Pos()).Line,
-		})
+		line := fset.Position(call.Pos()).Line
+		apiCall, callAmbiguities := buildAPICallSignal(
+			pkg,
+			relPath,
+			methodContext,
+			methodName,
+			receiver,
+			objType,
+			objExpr,
+			line,
+			target,
+			receiverNames,
+			pkgs,
+			repoPath,
+		)
+		calls = append(calls, apiCall)
+		ambiguities = append(ambiguities, callAmbiguities...)
 
 		return true
 	})
 
-	return calls
+	return calls, ambiguities
 }
 
 func extractOwnerRefOps(
@@ -1812,6 +1972,7 @@ func extractStatusUpdateSites(
 func extractEventUsages(
 	fd *ast.FuncDecl,
 	fset *token.FileSet,
+	relPath string,
 ) []EventUsage {
 	var events []EventUsage
 	eventMethods := map[string]bool{
@@ -1835,15 +1996,496 @@ func extractEventUsages(
 		}
 
 		events = append(events, EventUsage{
-			Receiver: receiver,
-			Method:   sel.Sel.Name,
-			Line:     fset.Position(call.Pos()).Line,
+			Receiver:       receiver,
+			Method:         sel.Sel.Name,
+			File:           relPath,
+			OperationClass: "eventCreate",
+			RequiredPermissions: []PermissionTuple{
+				{
+					Resource:   "events",
+					Verbs:      []string{"create", "patch"},
+					SourcePath: relPath,
+					SourceLine: fset.Position(call.Pos()).Line,
+				},
+			},
+			Line: fset.Position(call.Pos()).Line,
 		})
 
 		return true
 	})
 
 	return events
+}
+
+func buildAPICallSignal(
+	pkg *packages.Package,
+	relPath string,
+	methodContext string,
+	methodName string,
+	receiver string,
+	objType string,
+	objExpr ast.Expr,
+	line int,
+	target ReconcilesTarget,
+	receiverNames map[string]bool,
+	pkgs []*packages.Package,
+	repoPath string,
+) (APICall, []AmbiguitySignal) {
+	apiCall := APICall{
+		Method:             methodName,
+		Receiver:           receiver,
+		ObjType:            objType,
+		File:               relPath,
+		MethodContext:      methodContext,
+		OperationClass:     operationClassForMethod(methodName),
+		ReceiverResolution: classifyReceiverResolution(receiver, receiverNames),
+		ObjectResolution:   classifyObjectResolution(objExpr, objType, ""),
+		Line:               line,
+	}
+
+	var ambiguities []AmbiguitySignal
+	if apiCall.ReceiverResolution == "unresolved" {
+		ambiguities = append(ambiguities, AmbiguitySignal{
+			Kind:   "receiverUnresolved",
+			Detail: methodName,
+			File:   relPath,
+			Line:   line,
+		})
+	}
+
+	resolvedType, resolvedGroup, resolvedVersion, resolvedKind := resolveGVKForExpr(
+		pkg,
+		objExpr,
+		objType,
+		pkgs,
+		repoPath,
+	)
+	if resolvedType != "" {
+		apiCall.ResolvedType = resolvedType
+		apiCall.ObjectResolution = classifyObjectResolution(objExpr, objType, resolvedType)
+	}
+	if apiCall.ObjectResolution == "unstructured" {
+		resolvedGroup = ""
+		resolvedVersion = ""
+		resolvedKind = ""
+	}
+
+	if apiCall.OperationClass == "statusWrite" && target.Kind != "" {
+		if resolvedKind == "" {
+			resolvedKind = target.Kind
+		}
+		if resolvedGroup == "" {
+			resolvedGroup = target.Group
+		}
+		if resolvedVersion == "" {
+			resolvedVersion = target.Version
+		}
+	}
+
+	apiCall.ResolvedGroup = resolvedGroup
+	apiCall.ResolvedVersion = resolvedVersion
+	apiCall.ResolvedKind = resolvedKind
+
+	if apiCall.ObjectResolution == "unstructured" {
+		ambiguities = append(ambiguities, AmbiguitySignal{
+			Kind:   "usesUnstructured",
+			Detail: objType,
+			File:   relPath,
+			Line:   line,
+		})
+	}
+	if needsResourceIdentity(methodName) && resolvedKind == "" {
+		ambiguities = append(ambiguities, AmbiguitySignal{
+			Kind:   "resourceIdentityUnresolved",
+			Detail: objType,
+			File:   relPath,
+			Line:   line,
+		})
+	}
+
+	apiCall.RequiredPermissions = requiredPermissionsForAPICall(
+		apiCall.OperationClass,
+		methodName,
+		resolvedGroup,
+		resolvedVersion,
+		resolvedKind,
+		relPath,
+		line,
+	)
+
+	return apiCall, ambiguities
+}
+
+func requiredPermissionsForAPICall(
+	operationClass string,
+	methodName string,
+	group string,
+	version string,
+	kind string,
+	relPath string,
+	line int,
+) []PermissionTuple {
+	if kind == "" {
+		return nil
+	}
+
+	resource := kindToResource(kind)
+	if resource == "" {
+		return nil
+	}
+
+	permission := PermissionTuple{
+		Group:      group,
+		Version:    version,
+		Kind:       kind,
+		Resource:   resource,
+		Verbs:      verbsForMethod(methodName),
+		SourcePath: relPath,
+		SourceLine: line,
+	}
+	if operationClass == "statusWrite" {
+		permission.Subresource = "status"
+	}
+
+	return []PermissionTuple{permission}
+}
+
+func operationClassForMethod(methodName string) string {
+	switch methodName {
+	case MethodGet, MethodList:
+		return "read"
+	case MethodCreate, MethodUpdate, MethodPatch:
+		return "write"
+	case MethodDelete:
+		return "delete"
+	case "Status.Update", "Status.Patch":
+		return "statusWrite"
+	default:
+		return ""
+	}
+}
+
+func verbsForMethod(methodName string) []string {
+	switch methodName {
+	case MethodGet:
+		return []string{"get"}
+	case MethodList:
+		return []string{"list"}
+	case MethodCreate:
+		return []string{"create"}
+	case MethodUpdate, "Status.Update":
+		return []string{"update"}
+	case MethodPatch, "Status.Patch":
+		return []string{"patch"}
+	case MethodDelete:
+		return []string{"delete"}
+	default:
+		return nil
+	}
+}
+
+func classifyReceiverResolution(
+	receiver string,
+	receiverNames map[string]bool,
+) string {
+	if receiver == "" {
+		return "unresolved"
+	}
+	if receiverNames[receiver] {
+		return "receiver"
+	}
+	return "named"
+}
+
+func classifyObjectResolution(
+	objExpr ast.Expr,
+	objType string,
+	resolvedType string,
+) string {
+	candidate := resolvedType
+	if candidate == "" {
+		candidate = objType
+	}
+	if strings.Contains(candidate, "unstructured.Unstructured") || exprLooksUnstructured(objExpr) {
+		return "unstructured"
+	}
+
+	switch expr := objExpr.(type) {
+	case *ast.Ident:
+		if expr.Name == "nil" {
+			return "unresolved"
+		}
+		if resolvedType != "" {
+			return "typedVariable"
+		}
+		return "unresolved"
+	case *ast.CompositeLit:
+		return "typedLiteral"
+	case *ast.UnaryExpr:
+		if _, ok := expr.X.(*ast.CompositeLit); ok {
+			return "typedLiteral"
+		}
+		if resolvedType != "" {
+			return "typedVariable"
+		}
+	}
+	if resolvedType != "" {
+		return "typedVariable"
+	}
+	return "unresolved"
+}
+
+func exprLooksUnstructured(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.UnaryExpr:
+		return exprLooksUnstructured(e.X)
+	case *ast.CompositeLit:
+		return exprLooksUnstructured(e.Type)
+	case *ast.SelectorExpr:
+		return e.Sel != nil && e.Sel.Name == "Unstructured"
+	case *ast.Ident:
+		return e.Name == "Unstructured"
+	default:
+		return false
+	}
+}
+
+func resolveGVKForExpr(
+	pkg *packages.Package,
+	objExpr ast.Expr,
+	objType string,
+	pkgs []*packages.Package,
+	repoPath string,
+) (string, string, string, string) {
+	if pkg != nil && pkg.TypesInfo != nil && objExpr != nil {
+		if t := pkg.TypesInfo.TypeOf(objExpr); t != nil {
+			group, version, kind := inferGVKFromType(t, pkgs, repoPath)
+			return t.String(), group, version, kind
+		}
+	}
+
+	group, version, kind := inferGVKFromExprString(objType, pkgs, repoPath)
+	return "", group, version, kind
+}
+
+func inferGVKFromType(
+	t types.Type,
+	pkgs []*packages.Package,
+	repoPath string,
+) (string, string, string) {
+	for {
+		switch tt := t.(type) {
+		case *types.Pointer:
+			t = tt.Elem()
+		case *types.Slice:
+			t = tt.Elem()
+		case *types.Array:
+			t = tt.Elem()
+		default:
+			goto resolved
+		}
+	}
+
+resolved:
+	named, ok := t.(*types.Named)
+	if !ok || named.Obj() == nil {
+		return "", "", ""
+	}
+
+	kind := named.Obj().Name()
+	group := ""
+	version := ""
+	if objPkg := named.Obj().Pkg(); objPkg != nil {
+		group, version = inferGroupVersionFromPkgPath(objPkg.Path())
+	}
+	if group == "" && version == "" {
+		group, version = inferGroupVersion(pkgs, kind, repoPath)
+	}
+
+	return group, version, kind
+}
+
+func inferGVKFromExprString(
+	objType string,
+	pkgs []*packages.Package,
+	repoPath string,
+) (string, string, string) {
+	candidate := strings.TrimPrefix(objType, "&")
+	candidate = strings.TrimSuffix(candidate, "{}")
+	if candidate == "" || candidate == "?" {
+		return "", "", ""
+	}
+
+	if idx := strings.LastIndex(candidate, "."); idx >= 0 {
+		candidate = candidate[idx+1:]
+	}
+	candidate = strings.TrimPrefix(candidate, "*")
+	if candidate == "" {
+		return "", "", ""
+	}
+
+	group, version := inferGroupVersion(pkgs, candidate, repoPath)
+	return group, version, candidate
+}
+
+func inferGroupVersionFromPkgPath(pkgPath string) (string, string) {
+	const prefix = "k8s.io/api/"
+	if !strings.HasPrefix(pkgPath, prefix) {
+		return "", ""
+	}
+
+	parts := strings.Split(strings.TrimPrefix(pkgPath, prefix), "/")
+	if len(parts) != 2 {
+		return "", ""
+	}
+	if parts[0] == "core" {
+		return "", parts[1]
+	}
+	return parts[0], parts[1]
+}
+
+func needsResourceIdentity(methodName string) bool {
+	switch methodName {
+	case MethodGet, MethodList, MethodCreate, MethodUpdate, MethodPatch, MethodDelete, "Status.Update", "Status.Patch":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitCSV(value string) []string {
+	if value == "" {
+		return nil
+	}
+
+	var parts []string
+	for _, item := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';'
+	}) {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			parts = append(parts, item)
+		}
+	}
+	return parts
+}
+
+func scopeFromNamespace(namespace string) string {
+	if strings.TrimSpace(namespace) != "" {
+		return "Namespaced"
+	}
+	return ""
+}
+
+func scopeForRBACManifest(kind string) string {
+	switch kind {
+	case "Role":
+		return "Namespaced"
+	case "ClusterRole":
+		return "Cluster"
+	default:
+		return ""
+	}
+}
+
+func normalizePermissionTuples(
+	groups []string,
+	resources []string,
+	verbs []string,
+	resourceNames []string,
+	scope string,
+	sourcePath string,
+	sourceLine int,
+) []PermissionTuple {
+	if len(resources) == 0 {
+		return nil
+	}
+	if len(groups) == 0 {
+		groups = []string{""}
+	}
+
+	var tuples []PermissionTuple
+	for _, group := range groups {
+		for _, resource := range resources {
+			name, subresource := splitResourceAndSubresource(resource)
+			tuples = append(tuples, PermissionTuple{
+				Group:         group,
+				Resource:      name,
+				Subresource:   subresource,
+				Verbs:         append([]string(nil), verbs...),
+				Scope:         scope,
+				ResourceNames: append([]string(nil), resourceNames...),
+				SourcePath:    sourcePath,
+				SourceLine:    sourceLine,
+			})
+		}
+	}
+
+	return tuples
+}
+
+func splitResourceAndSubresource(resource string) (string, string) {
+	parts := strings.SplitN(resource, "/", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return resource, ""
+}
+
+func dedupeAmbiguitySignals(signals []AmbiguitySignal) []AmbiguitySignal {
+	if len(signals) == 0 {
+		return nil
+	}
+
+	sort.Slice(signals, func(i, j int) bool {
+		if signals[i].File != signals[j].File {
+			return signals[i].File < signals[j].File
+		}
+		if signals[i].Line != signals[j].Line {
+			return signals[i].Line < signals[j].Line
+		}
+		if signals[i].Kind != signals[j].Kind {
+			return signals[i].Kind < signals[j].Kind
+		}
+		return signals[i].Detail < signals[j].Detail
+	})
+
+	deduped := signals[:0]
+	var lastKey string
+	for _, signal := range signals {
+		key := signal.File + "|" + strconv.Itoa(signal.Line) + "|" + signal.Kind + "|" + signal.Detail
+		if key == lastKey {
+			continue
+		}
+		deduped = append(deduped, signal)
+		lastKey = key
+	}
+	return deduped
+}
+
+func kindToResource(kind string) string {
+	lower := strings.ToLower(kind)
+	switch {
+	case strings.HasSuffix(lower, "ch"),
+		strings.HasSuffix(lower, "sh"),
+		strings.HasSuffix(lower, "s"),
+		strings.HasSuffix(lower, "x"),
+		strings.HasSuffix(lower, "z"):
+		return lower + "es"
+	case strings.HasSuffix(lower, "y") && len(lower) > 1 && !isVowel(lower[len(lower)-2]):
+		return lower[:len(lower)-1] + "ies"
+	default:
+		return lower + "s"
+	}
+}
+
+func isVowel(ch byte) bool {
+	switch ch {
+	case 'a', 'e', 'i', 'o', 'u':
+		return true
+	default:
+		return false
+	}
 }
 
 func extractNotFoundHandlers(
@@ -1970,6 +2612,52 @@ func inferGroupVersion(
 	}
 
 	return "", ""
+}
+
+// extractMaxConcurrentReconciles finds WithOptions(controller.Options{MaxConcurrentReconciles: N})
+// in SetupWithManager and returns the value, or 0 if not set.
+func extractMaxConcurrentReconciles(
+	index *packageIndex,
+	reconcilerName string,
+) int {
+	setupMethod, ok := index.method(reconcilerName, FuncSetupWithManager)
+	if !ok || setupMethod.decl.Body == nil {
+		return 0
+	}
+
+	maxConcurrent := 0
+	ast.Inspect(setupMethod.decl.Body, func(n ast.Node) bool {
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+
+		// Look for controller.Options{...} or Options{...}
+		typeName := typeExprName(cl.Type)
+		if typeName != "controller.Options" && typeName != "Options" {
+			return true
+		}
+
+		for _, elt := range cl.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok || key.Name != "MaxConcurrentReconciles" {
+				continue
+			}
+			if lit, ok := kv.Value.(*ast.BasicLit); ok && lit.Kind == token.INT {
+				if v, err := strconv.Atoi(lit.Value); err == nil {
+					maxConcurrent = v
+				}
+			}
+		}
+
+		return true
+	})
+
+	return maxConcurrent
 }
 
 func packageHasRootKind(pkg *packages.Package, kind string) bool {

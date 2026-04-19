@@ -108,4 +108,5 @@ hooks/**/*.a
 .claude/settings.local.json
 .cursor/
 .codex
-.codex/
+.codex/tools/k8s-controller-analyzer/k8s-controller-analyzer
+tools/k8s-controller-analyzer/mcp

@@ -9,6 +9,28 @@ type Fact struct {
 	Data  any      `json:"data"`
 }
 
+// PermissionTuple is a normalized RBAC-relevant permission signal.
+type PermissionTuple struct {
+	Group         string   `json:"group,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	Kind          string   `json:"kind,omitempty"`
+	Resource      string   `json:"resource,omitempty"`
+	Subresource   string   `json:"subresource,omitempty"`
+	Verbs         []string `json:"verbs,omitempty"`
+	Scope         string   `json:"scope,omitempty"`
+	ResourceNames []string `json:"resource_names,omitempty"`
+	SourcePath    string   `json:"source_path,omitempty"`
+	SourceLine    int      `json:"source_line,omitempty"`
+}
+
+// AmbiguitySignal explains why a controller signal could not be resolved fully.
+type AmbiguitySignal struct {
+	Kind   string `json:"kind"`
+	Detail string `json:"detail,omitempty"`
+	File   string `json:"file,omitempty"`
+	Line   int    `json:"line"`
+}
+
 // NewFact creates a Fact with a single rule string.
 func NewFact(
 	rule string,
@@ -46,12 +68,13 @@ func NewMultiRuleFact(
 
 // RBACMarker represents a parsed kubebuilder:rbac marker.
 type RBACMarker struct {
-	Verbs         string `json:"verbs"`
-	Resource      string `json:"resource"`
-	Group         string `json:"group"`
-	ResourceNames string `json:"resource_names,omitempty"`
-	Namespace     string `json:"namespace,omitempty"`
-	Line          int    `json:"line"`
+	Verbs         string            `json:"verbs"`
+	Resource      string            `json:"resource"`
+	Group         string            `json:"group"`
+	ResourceNames string            `json:"resource_names,omitempty"`
+	Namespace     string            `json:"namespace,omitempty"`
+	Line          int               `json:"line"`
+	Permissions   []PermissionTuple `json:"permissions,omitempty"`
 }
 
 // FinalizerOp represents a finalizer add/remove/contains operation.
@@ -63,10 +86,20 @@ type FinalizerOp struct {
 
 // APICall represents a candidate Kubernetes client API call.
 type APICall struct {
-	Method   string `json:"method"`
-	Receiver string `json:"receiver"`
-	ObjType  string `json:"obj_type"`
-	Line     int    `json:"line"`
+	Method              string            `json:"method"`
+	Receiver            string            `json:"receiver"`
+	ObjType             string            `json:"obj_type"`
+	File                string            `json:"file,omitempty"`
+	MethodContext       string            `json:"method_context,omitempty"`
+	ResolvedType        string            `json:"resolved_type,omitempty"`
+	ResolvedGroup       string            `json:"resolved_group,omitempty"`
+	ResolvedVersion     string            `json:"resolved_version,omitempty"`
+	ResolvedKind        string            `json:"resolved_kind,omitempty"`
+	OperationClass      string            `json:"operation_class,omitempty"`
+	ReceiverResolution  string            `json:"receiver_resolution,omitempty"`
+	ObjectResolution    string            `json:"object_resolution,omitempty"`
+	RequiredPermissions []PermissionTuple `json:"required_permissions,omitempty"`
+	Line                int               `json:"line"`
 }
 
 // WriteOp represents an external write operation (Create/Update/Patch/Delete).
@@ -112,9 +145,12 @@ type LibraryInvocation struct {
 
 // EventUsage represents an event recorder call.
 type EventUsage struct {
-	Receiver string `json:"receiver"`
-	Method   string `json:"method"`
-	Line     int    `json:"line"`
+	Receiver            string            `json:"receiver"`
+	Method              string            `json:"method"`
+	File                string            `json:"file,omitempty"`
+	OperationClass      string            `json:"operation_class,omitempty"`
+	RequiredPermissions []PermissionTuple `json:"required_permissions,omitempty"`
+	Line                int               `json:"line"`
 }
 
 // OwnerRefOp represents owner reference or finalizer operations.
@@ -157,24 +193,26 @@ type ReconcilesTarget struct {
 
 // ControllerData holds all extracted data for a controller/reconciler.
 type ControllerData struct {
-	Name                string               `json:"name"`
-	Reconciles          ReconcilesTarget     `json:"reconciles"`
-	Owns                []string             `json:"owns"`
-	Watches             []string             `json:"watches"`
-	RBACMarkers         []RBACMarker         `json:"rbac_markers"`
-	FinalizerOps        []FinalizerOp        `json:"finalizer_ops"`
-	OwnerRefOps         []OwnerRefOp         `json:"owner_ref_ops"`
-	ExternalWriteOps    []WriteOp            `json:"external_write_ops"`
-	APICalls            []APICall            `json:"api_calls"`
-	StatusConditionSets []StatusConditionSet `json:"status_condition_sets"`
-	StatusUpdateSites   []StatusUpdateSite   `json:"status_update_sites"`
-	RetryOps            []RetryOp            `json:"retry_ops"`
-	LibraryInvocations  []LibraryInvocation  `json:"library_invocations"`
-	EventUsages         []EventUsage         `json:"event_usages"`
-	NotFoundHandlers    []NotFoundHandling   `json:"not_found_handlers"`
-	PredicateUsages     []PredicateUsage     `json:"predicate_usages"`
-	RequeueOps          []RequeueOp          `json:"requeue_ops"`
-	ErrorReturns        []ErrorReturn        `json:"error_returns"`
+	Name                   string               `json:"name"`
+	Reconciles             ReconcilesTarget     `json:"reconciles"`
+	Owns                   []string             `json:"owns"`
+	Watches                []string             `json:"watches"`
+	RBACMarkers            []RBACMarker         `json:"rbac_markers"`
+	FinalizerOps           []FinalizerOp        `json:"finalizer_ops"`
+	OwnerRefOps            []OwnerRefOp         `json:"owner_ref_ops"`
+	ExternalWriteOps       []WriteOp            `json:"external_write_ops"`
+	APICalls               []APICall            `json:"api_calls"`
+	StatusConditionSets    []StatusConditionSet `json:"status_condition_sets"`
+	StatusUpdateSites      []StatusUpdateSite   `json:"status_update_sites"`
+	RetryOps               []RetryOp            `json:"retry_ops"`
+	LibraryInvocations     []LibraryInvocation  `json:"library_invocations"`
+	EventUsages            []EventUsage         `json:"event_usages"`
+	NotFoundHandlers       []NotFoundHandling   `json:"not_found_handlers"`
+	PredicateUsages        []PredicateUsage     `json:"predicate_usages"`
+	RequeueOps             []RequeueOp          `json:"requeue_ops"`
+	ErrorReturns           []ErrorReturn        `json:"error_returns"`
+	AmbiguitySignals       []AmbiguitySignal    `json:"ambiguity_signals,omitempty"`
+	MaxConcurrentReconciles int                  `json:"max_concurrent_reconciles,omitempty"`
 }
 
 // CRDVersionData holds extracted data for a CRD version.
@@ -197,7 +235,20 @@ type CRDFieldData struct {
 	HasOmitempty bool          `json:"has_omitempty"`
 	IsOptional   bool          `json:"is_optional"`
 	IsRequired   bool          `json:"is_required"`
-	Markers      []FieldMarker `json:"markers,omitempty"`
+	ListType       string        `json:"list_type,omitempty"`        // "atomic", "set", or "map"
+	ListMapKeys    []string      `json:"list_map_keys,omitempty"`    // keys for listType=map
+	CELRules       []CELRule     `json:"cel_rules,omitempty"`        // x-kubernetes-validations
+	HasMaxItems    bool          `json:"has_max_items,omitempty"`    // +kubebuilder:validation:MaxItems present
+	HasMaxProperties bool       `json:"has_max_properties,omitempty"` // +kubebuilder:validation:MaxProperties present
+	Markers        []FieldMarker `json:"markers,omitempty"`
+}
+
+// CELRule represents a parsed +kubebuilder:validation:XValidation rule.
+type CELRule struct {
+	Rule       string `json:"rule"`
+	Message    string `json:"message,omitempty"`
+	UsesOldSel bool   `json:"uses_old_self"` // transition rule using oldSelf
+	Line       int    `json:"line"`
 }
 
 // FieldMarker represents a validation/default marker on a struct field.
@@ -220,6 +271,9 @@ type CRDTypeData struct {
 
 	// Status struct analysis
 	StatusFieldType string `json:"status_field_type,omitempty"` // e.g., "FooStatus"
+
+	// CEL validation rules on the type
+	CELRules []CELRule `json:"cel_rules,omitempty"`
 }
 
 // WebhookData holds extracted data for a webhook.
@@ -272,20 +326,25 @@ type LoggingCall struct {
 
 // RBACManifestData holds facts from a Role/ClusterRole YAML file.
 type RBACManifestData struct {
-	Name        string         `json:"name"`
-	Kind        string         `json:"kind"`
-	Namespace   string         `json:"namespace,omitempty"`
-	Rules       []RBACRuleData `json:"rules"`
-	HasWildcard bool           `json:"has_wildcard"`
-	HasEvents   bool           `json:"has_events"`
+	Name                string            `json:"name"`
+	Kind                string            `json:"kind"`
+	Namespace           string            `json:"namespace,omitempty"`
+	Rules               []RBACRuleData    `json:"rules"`
+	Permissions         []PermissionTuple `json:"permissions,omitempty"`
+	HasWildcard         bool              `json:"has_wildcard"`
+	HasWildcardGroup    bool              `json:"has_wildcard_group,omitempty"`
+	HasWildcardResource bool              `json:"has_wildcard_resource,omitempty"`
+	HasWildcardVerb     bool              `json:"has_wildcard_verb,omitempty"`
+	HasEvents           bool              `json:"has_events"`
 }
 
 // RBACRuleData represents a single RBAC rule entry.
 type RBACRuleData struct {
-	APIGroups     []string `json:"api_groups"`
-	Resources     []string `json:"resources"`
-	Verbs         []string `json:"verbs"`
-	ResourceNames []string `json:"resource_names,omitempty"`
+	APIGroups     []string          `json:"api_groups"`
+	Resources     []string          `json:"resources"`
+	Verbs         []string          `json:"verbs"`
+	ResourceNames []string          `json:"resource_names,omitempty"`
+	Permissions   []PermissionTuple `json:"permissions,omitempty"`
 }
 
 // CRDManifestData holds facts from a CustomResourceDefinition YAML file.
@@ -296,6 +355,8 @@ type CRDManifestData struct {
 	Scope              string               `json:"scope"`
 	Versions           []CRDManifestVersion `json:"versions"`
 	ConversionStrategy string               `json:"conversion_strategy,omitempty"`
+	ServedVersionCount int                  `json:"served_version_count"`
+	HasMultipleServed  bool                 `json:"has_multiple_served"`
 }
 
 // CRDManifestVersion represents a single CRD version entry.
@@ -315,11 +376,12 @@ type WebhookManifestData struct {
 
 // WebhookManifestEntry represents a single webhook entry.
 type WebhookManifestEntry struct {
-	Name           string   `json:"name"`
-	FailurePolicy  string   `json:"failure_policy"`
-	SideEffects    string   `json:"side_effects"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
-	Scopes         []string `json:"scopes,omitempty"`
+	Name               string   `json:"name"`
+	FailurePolicy      string   `json:"failure_policy"`
+	SideEffects        string   `json:"side_effects"`
+	TimeoutSeconds     int      `json:"timeout_seconds"`
+	ReinvocationPolicy string   `json:"reinvocation_policy,omitempty"`
+	Scopes             []string `json:"scopes,omitempty"`
 }
 
 // DeploymentManifestData holds facts from a Deployment/StatefulSet YAML file.
@@ -366,4 +428,14 @@ type ManifestData struct {
 type ManifestEntry struct {
 	Category string `json:"category"`
 	Path     string `json:"path"`
+}
+
+// ManagerConfigData holds extracted manager configuration from main/cmd.
+type ManagerConfigData struct {
+	LeaderElection             bool   `json:"leader_election"`
+	LeaderElectionID           string `json:"leader_election_id,omitempty"`
+	LeaderElectionResourceLock string `json:"leader_election_resource_lock,omitempty"`
+	LeaderElectionReleaseOnCancel bool `json:"leader_election_release_on_cancel,omitempty"`
+	HasSignalHandler           bool   `json:"has_signal_handler"`
+	GracefulShutdownTimeout    string `json:"graceful_shutdown_timeout,omitempty"`
 }

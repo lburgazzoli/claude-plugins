@@ -42,6 +42,19 @@ func ExtractMarkersFromDoc(
 	return markers
 }
 
+// ExtractMarkersFromGroups extracts kubebuilder markers from multiple comment groups.
+func ExtractMarkersFromGroups(
+	groups []*ast.CommentGroup,
+	fset *token.FileSet,
+) []Marker {
+	var markers []Marker
+	for _, cg := range groups {
+		markers = append(markers, ExtractMarkersFromDoc(cg, fset)...)
+	}
+
+	return markers
+}
+
 // DocOrNearby returns the Doc comment group if present, otherwise scans
 // the file's comments for one within 3 lines above the declaration.
 func DocOrNearby(
@@ -63,6 +76,57 @@ func DocOrNearby(
 	}
 
 	return nil
+}
+
+// CollectNearbyCommentGroups returns all comment groups within maxGap lines
+// above the declaration, starting from doc (if present) and scanning upward.
+// This handles the common kubebuilder pattern where markers are in a separate
+// comment group above the doc comment, separated by a blank line.
+func CollectNearbyCommentGroups(
+	file *ast.File,
+	fset *token.FileSet,
+	pos token.Pos,
+	doc *ast.CommentGroup,
+	maxGap int,
+) []*ast.CommentGroup {
+	declLine := fset.Position(pos).Line
+
+	// Collect all comment groups that end before the declaration.
+	var candidates []*ast.CommentGroup
+	for _, cg := range file.Comments {
+		lastLine := fset.Position(cg.End()).Line
+		if lastLine < declLine {
+			candidates = append(candidates, cg)
+		}
+	}
+
+	if len(candidates) == 0 {
+		if doc != nil {
+			return []*ast.CommentGroup{doc}
+		}
+		return nil
+	}
+
+	// Walk backwards from the declaration, collecting groups within maxGap
+	// of each other (or within maxGap of the declaration line).
+	var result []*ast.CommentGroup
+	prevStart := declLine
+	for i := len(candidates) - 1; i >= 0; i-- {
+		cg := candidates[i]
+		lastLine := fset.Position(cg.End()).Line
+		if prevStart-lastLine > maxGap {
+			break
+		}
+		result = append(result, cg)
+		prevStart = fset.Position(cg.Pos()).Line
+	}
+
+	// Reverse to maintain source order.
+	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
+		result[i], result[j] = result[j], result[i]
+	}
+
+	return result
 }
 
 // markerName returns the marker identifier before the first key=value segment.

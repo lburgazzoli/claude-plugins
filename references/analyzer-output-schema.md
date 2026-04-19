@@ -77,7 +77,8 @@ Skills consuming analyzer output should follow these rules:
 5. For RBAC reasoning:
    - use `rbac_manifest` as the primary evidence for effective committed permissions
    - use `controller.rbac_markers` as secondary evidence for source/generator intent
-   - use `controller.api_calls` to determine what permissions are needed
+   - use `controller.api_calls[].required_permissions` to determine what permissions are needed when the analyzer can resolve them concretely
+   - use `controller.ambiguity_signals` to detect unresolved receiver, unstructured, or rendered-object cases before scoring unused-RBAC findings
 6. For controller identity, use `controller.data.reconciles.kind`,
    `controller.data.reconciles.group`, and `controller.data.reconciles.version`.
    Do not look for legacy flat `reconciles_kind`, `reconciles_group`, or
@@ -107,12 +108,23 @@ Payload fields:
 - `predicate_usages`
 - `requeue_ops`
 - `error_returns`
+- `ambiguity_signals`
+- `max_concurrent_reconciles`
 
 `reconciles` is a nested object with:
 
 - `group`
 - `version`
 - `kind`
+
+RBAC-relevant nested signals:
+
+- `rbac_markers[].permissions` — normalized permission tuples derived from source markers
+- `api_calls[].operation_class` — normalized intent such as `read`, `write`, or `statusWrite`
+- `api_calls[].required_permissions` — normalized permission tuples inferred from concrete API usage
+- `api_calls[].receiver_resolution` / `api_calls[].object_resolution` — resolution metadata for confidence and ambiguity handling
+- `event_usages[].required_permissions` — normalized permission tuples for emitted events
+- `ambiguity_signals[]` — explicit unresolved-signal records such as `receiverUnresolved`, `usesUnstructured`, or `usesRenderedObjects`
 
 ### `crd_version`
 
@@ -139,6 +151,7 @@ Payload fields:
 - `fields`
 - `unsigned_fields`
 - `status_field_type`
+- `cel_rules`
 
 ### `crd_field`
 
@@ -151,6 +164,11 @@ Payload fields:
 - `has_omitempty`
 - `is_optional`
 - `is_required`
+- `list_type`
+- `list_map_keys`
+- `cel_rules`
+- `has_max_items`
+- `has_max_properties`
 - `markers`
 
 ### `webhook`
@@ -190,7 +208,11 @@ Payload fields:
 - `kind`
 - `namespace`
 - `rules`
+- `permissions`
 - `has_wildcard`
+- `has_wildcard_group`
+- `has_wildcard_resource`
+- `has_wildcard_verb`
 - `has_events`
 
 ### `crd_manifest`
@@ -203,6 +225,8 @@ Payload fields:
 - `scope`
 - `versions`
 - `conversion_strategy`
+- `served_version_count`
+- `has_multiple_served`
 
 ### `webhook_manifest`
 
@@ -211,6 +235,8 @@ Payload fields:
 - `name`
 - `kind`
 - `webhooks`
+
+Each webhook entry includes `reinvocation_policy` (for mutating webhooks).
 
 ### `deployment_manifest`
 
@@ -229,6 +255,17 @@ Payload fields:
 - `name`
 - `namespace`
 - `policy_types`
+
+### `manager_config`
+
+Payload fields:
+
+- `leader_election`
+- `leader_election_id`
+- `leader_election_resource_lock`
+- `leader_election_release_on_cancel`
+- `has_signal_handler`
+- `graceful_shutdown_timeout`
 
 ### `test_discovery`
 

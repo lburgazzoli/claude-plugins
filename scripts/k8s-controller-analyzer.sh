@@ -78,5 +78,5 @@ fi
 
 (
   cd "${ANALYZER_DIR}"
-  go run ./cmd "${args[@]}"
+  go run ./cmd analyze "${args[@]}"
 )

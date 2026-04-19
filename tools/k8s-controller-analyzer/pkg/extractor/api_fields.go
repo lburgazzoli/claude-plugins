@@ -73,11 +73,11 @@ func extractAPIFieldsFromFile(
 				continue
 			}
 
-			doc := DocOrNearby(file, fset, ts.Pos(), ts.Doc)
-			if doc == nil {
-				doc = DocOrNearby(file, fset, gd.Pos(), gd.Doc)
+			groups := CollectNearbyCommentGroups(file, fset, ts.Pos(), ts.Doc, 3)
+			if len(groups) == 0 {
+				groups = CollectNearbyCommentGroups(file, fset, gd.Pos(), gd.Doc, 3)
 			}
-			markers := ExtractMarkersFromDoc(doc, fset)
+			markers := ExtractMarkersFromGroups(groups, fset)
 
 			isRoot := hasMarker(markers, MarkerObjectRoot)
 
@@ -135,9 +135,9 @@ func extractCRDTypeData(
 		HasStatusSub:  hasMarker(markers, "kubebuilder:subresource:status"),
 	}
 
-	// Check for resource scope
+	// Check for resource scope, print columns, and CEL rules
 	for _, m := range markers {
-		if m.Name == MarkerResource {
+		if m.Name == MarkerResource || strings.HasPrefix(m.Name, MarkerResource+":") {
 			data.ResourceScope = m.Args[ArgScope]
 		}
 		if m.Name == MarkerPrintColumn {
@@ -145,6 +145,15 @@ func extractCRDTypeData(
 				Name:  m.Args[ArgName],
 				Value: m.Raw,
 				Line:  m.Line,
+			})
+		}
+		if strings.HasPrefix(m.Name, MarkerXValidation) {
+			rule := m.Args["rule"]
+			data.CELRules = append(data.CELRules, CELRule{
+				Rule:       rule,
+				Message:    m.Args["message"],
+				UsesOldSel: strings.Contains(rule, "oldSelf"),
+				Line:       m.Line,
 			})
 		}
 	}
@@ -207,6 +216,29 @@ func extractFieldData(
 			data.IsOptional = true
 		case m.Name == MarkerValidationReq:
 			data.IsRequired = true
+		case m.Name == MarkerListType:
+			data.ListType = m.Args[MarkerListType]
+		case m.Name == MarkerListMapKey:
+			data.ListMapKeys = append(data.ListMapKeys, m.Args[MarkerListMapKey])
+		}
+
+		// Collect CEL validation rules
+		if strings.HasPrefix(m.Name, MarkerXValidation) {
+			rule := m.Args["rule"]
+			data.CELRules = append(data.CELRules, CELRule{
+				Rule:       rule,
+				Message:    m.Args["message"],
+				UsesOldSel: strings.Contains(rule, "oldSelf"),
+				Line:       m.Line,
+			})
+		}
+
+		// Detect size-bounding markers for CEL cost analysis
+		if m.Name == "kubebuilder:validation:MaxItems" {
+			data.HasMaxItems = true
+		}
+		if m.Name == "kubebuilder:validation:MaxProperties" {
+			data.HasMaxProperties = true
 		}
 
 		// Collect all validation/default markers

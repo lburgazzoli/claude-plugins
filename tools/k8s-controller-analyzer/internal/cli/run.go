@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,8 +22,23 @@ type Options struct {
 	StrictLoad bool
 }
 
-// Run executes the end-to-end analyzer flow.
+// Run executes the end-to-end analyzer flow, writing to stdout or --out file.
 func Run(opts Options) error {
+	w := os.Stdout
+	if opts.OutFile != "" {
+		f, err := os.Create(opts.OutFile)
+		if err != nil {
+			return fmt.Errorf("error creating output file: %w", err)
+		}
+		defer f.Close()
+		w = f
+	}
+
+	return RunTo(w, opts)
+}
+
+// RunTo executes the end-to-end analyzer flow, writing output to the given writer.
+func RunTo(w io.Writer, opts Options) error {
 	repoPath, err := filepath.Abs(opts.RepoPath)
 	if err != nil {
 		return err
@@ -34,7 +50,7 @@ func Run(opts Options) error {
 	}
 
 	if opts.Skill != "" && !extractor.ValidSkills[opts.Skill] {
-		return fmt.Errorf("unknown skill %q (valid: architecture, api, production-readiness)", opts.Skill)
+		return fmt.Errorf("unknown skill %q (valid: architecture, api, lifecycle, production-readiness)", opts.Skill)
 	}
 
 	var facts []extractor.Fact
@@ -44,6 +60,7 @@ func Run(opts Options) error {
 	facts = append(facts, extractor.ExtractWebhooks(pkgs, repoPath)...)
 	facts = append(facts, extractor.ExtractSchemeRegistrations(pkgs, repoPath)...)
 	facts = append(facts, extractor.ExtractImports(pkgs, repoPath)...)
+	facts = append(facts, extractor.ExtractManagerConfig(pkgs, repoPath)...)
 
 	walk, err := extractor.WalkRepo(repoPath)
 	if err != nil {
@@ -81,16 +98,6 @@ func Run(opts Options) error {
 			ruleSet[strings.TrimSpace(r)] = true
 		}
 		facts = filterByRules(facts, ruleSet)
-	}
-
-	w := os.Stdout
-	if opts.OutFile != "" {
-		f, err := os.Create(opts.OutFile)
-		if err != nil {
-			return fmt.Errorf("error creating output file: %w", err)
-		}
-		defer f.Close()
-		w = f
 	}
 
 	format := opts.Format

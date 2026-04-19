@@ -8,12 +8,13 @@ add the corresponding extraction to the relevant extractor file.
 
 | Rule ID                  | Skill                              | Fields used                                                             | Added |
 |--------------------------|------------------------------------|-------------------------------------------------------------------------|-------|
-| rbac-coverage            | k8s.controller-architecture (3a-d) | rbac_markers, owns, watches, api_calls                                  | v0.1  |
+| rbac-coverage            | k8s.controller-architecture (3a-d) | rbac_markers.permissions, api_calls.required_permissions, api_calls.operation_class, event_usages.required_permissions, ambiguity_signals, owns, watches | v0.2  |
 | requeue-safety           | k8s.controller-architecture (2a-c) | error_returns, requeue_ops                                              | v0.1  |
 | finalizer-safety         | k8s.controller-architecture (5a-c) | finalizer_ops, owner_ref_ops, external_write_ops                        | v0.1  |
 | status-conditions        | k8s.controller-architecture (4a-d) | status_condition_sets, status_update_sites, retry_ops, reconciles.kind  | v0.2  |
 | library-rendering        | k8s.controller-architecture (7d-e) | library_invocations                                                     | v0.3  |
 | watch-owns-alignment     | k8s.controller-architecture (8a-b) | owns, watches, predicate_usages                                        | v0.1  |
+| concurrency-config       | k8s.controller-architecture (11a)  | max_concurrent_reconciles                                              | v0.4  |
 
 ### Controller fact fields
 
@@ -25,11 +26,11 @@ add the corresponding extraction to the relevant extractor file.
 | reconciles.version    | CRD version from package path                                               |
 | owns                  | Types passed to `.Owns()` in SetupWithManager                               |
 | watches               | Types passed to `.Watches()` in SetupWithManager                            |
-| rbac_markers          | Parsed +kubebuilder:rbac markers (verbs, resource, group, resourceNames)    |
+| rbac_markers          | Parsed +kubebuilder:rbac markers plus normalized `permissions` tuples        |
 | finalizer_ops         | AddFinalizer/RemoveFinalizer calls with values                              |
 | owner_ref_ops         | SetControllerReference/SetOwnerReference/finalizer calls                    |
 | external_write_ops    | Create/Update/Patch/Delete calls in Reconcile                               |
-| api_calls             | All candidate k8s client API calls (method, receiver, obj_type)             |
+| api_calls             | Candidate k8s client API calls plus normalized operation class, resolution metadata, and `required_permissions` |
 | status_condition_sets | meta.SetStatusCondition calls with condition type and ObservedGeneration     |
 | status_update_sites   | Status().Update()/Status().Patch() calls with retry guard metadata          |
 | retry_ops            | Retry wrapper usage (RetryOnConflict/OnError), backoff kind, wrapped calls |
@@ -39,6 +40,8 @@ add the corresponding extraction to the relevant extractor file.
 | predicate_usages      | Predicate types and WithEventFilter calls in SetupWithManager               |
 | requeue_ops           | Requeue/RequeueAfter in return statements                                   |
 | error_returns         | Error returns with requeue presence                                         |
+| ambiguity_signals     | Explicit unresolved-evidence signals for receiver, unstructured, or rendered-object cases |
+| max_concurrent_reconciles | MaxConcurrentReconciles value from WithOptions in SetupWithManager (0 if not set) |
 
 ## CRD Version Extractor (`extractor/crd_versions.go`)
 
@@ -53,6 +56,8 @@ add the corresponding extraction to the relevant extractor file.
 | crd-structure            | k8s.controller-api (1a-h)     | crd_type: root/status markers, scope, print_columns        | v0.2  |
 | field-conventions        | k8s.controller-api (1d-g)     | crd_field: json_tag, omitempty, optional, required, type    | v0.2  |
 | marker-correctness       | k8s.controller-api (4a-f)     | crd_field: markers, crd_type: root/status markers          | v0.2  |
+| list-type-markers        | k8s.controller-api (5a-b)     | crd_field: list_type, list_map_keys                        | v0.4  |
+| cel-validation           | k8s.controller-api (6a-c, 8a-b) | crd_field: cel_rules, crd_type: cel_rules, has_max_items, has_max_properties, is_optional | v0.4  |
 
 ## Webhook Extractor (`extractor/webhooks.go`)
 
@@ -85,6 +90,23 @@ add the corresponding extraction to the relevant extractor file.
 | has_metrics         | Whether a metrics package import was detected                     |
 | metrics_package     | Metrics package import path                                       |
 
+## Manager Config Extractor (`extractor/manager.go`)
+
+| Rule ID                  | Skill                              | Fields used                                                             | Added |
+|--------------------------|------------------------------------|-------------------------------------------------------------------------|-------|
+| manager-config           | k8s.controller-lifecycle (1a-d, 2a-b) | leader_election, leader_election_id, leader_election_resource_lock, leader_election_release_on_cancel, has_signal_handler, graceful_shutdown_timeout | v0.4  |
+
+### Manager config fact fields
+
+| Field                            | Description                                                       |
+|----------------------------------|-------------------------------------------------------------------|
+| leader_election                  | Whether LeaderElection is enabled in manager options               |
+| leader_election_id               | LeaderElectionID value                                             |
+| leader_election_resource_lock    | Resource lock type (leases, configmaps, endpoints, etc.)          |
+| leader_election_release_on_cancel| Whether lease is released on context cancel                       |
+| has_signal_handler               | Whether ctrl.SetupSignalHandler() is used                         |
+| graceful_shutdown_timeout        | GracefulShutdownTimeout value if set                              |
+
 ## Common fact envelope
 
 Every emitted fact uses the same outer shape:
@@ -100,7 +122,8 @@ For architecture assessments:
 
 - Use `rbac_manifest` as the primary evidence for effective committed permissions.
 - Use `controller.rbac_markers` as secondary evidence for generator intent and drift checks.
-- Use `controller.api_calls` to determine what permissions the controller actually needs.
+- Use `controller.api_calls[].required_permissions` to determine what permissions the controller actually needs when the analyzer can resolve them.
+- Use `controller.ambiguity_signals` to carry uncertainty forward instead of treating it as a finding.
 
 ## How to add a new rule
 

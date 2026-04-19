@@ -77,3 +77,4 @@ MCP servers are configured via `.mcp.json` at the plugin root. They:
 - Document all environment variables and dependencies
 - Test with `claude --plugin-dir .` before committing
 - Use `/reload-plugins` to hot-reload during development
+- Use `jq` instead of Python for JSON manipulation in scripts and tool invocations when possible

@@ -15,6 +15,7 @@ import (
 var ValidSkills = map[string]bool{
 	"architecture":         true,
 	"api":                  true,
+	"lifecycle":            true,
 	"production-readiness": true,
 }
 
@@ -72,6 +73,24 @@ func BuildManifest(
 		// Also include Go files with webhook markers
 		for _, p := range discoverWebhookGoFiles(pkgs, repoPath) {
 			add("webhook", p)
+		}
+
+	case "lifecycle":
+		for _, p := range discoverEntrypoints(pkgs, repoPath) {
+			add("entrypoint", p)
+		}
+		for _, p := range discoverControllers(pkgs, repoPath) {
+			add("controller", p)
+		}
+		for _, d := range walk.YAMLDocs {
+			switch d.Kind {
+			case "Deployment", "StatefulSet":
+				add("deployment", d.RelPath)
+			case "ValidatingWebhookConfiguration", "MutatingWebhookConfiguration":
+				add("webhook", d.RelPath)
+			case "CustomResourceDefinition":
+				add("crd", d.RelPath)
+			}
 		}
 
 	case "production-readiness":

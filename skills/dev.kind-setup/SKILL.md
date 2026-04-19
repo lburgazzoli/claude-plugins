@@ -1,6 +1,8 @@
 ---
-name: dev.kind.setup
+name: dev.kind-setup
 description: Create a Kind cluster and install the latest cert-manager.
+user-invocable: true
+allowed-tools: "Bash"
 ---
 
 # Kind Cluster Setup
