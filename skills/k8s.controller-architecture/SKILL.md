@@ -249,22 +249,25 @@ Use area names exactly as written in the section headings below.
   - finding: controller uses direct API reads (non-cached client) for resources that are also watched (`Minor`)
   - pass: reads use the cached client by default
   - not-observed: cannot determine client type from code
+  - > **Deterministic mode**: defaults to `not-observed`. The analyzer does not track which client type (cached vs. direct) is used per API call. In exploratory mode, use `go_file_context` on the reconciler struct to inspect client field types.
 
 - **7b. Status updates are avoided when unchanged**
   - title: "Unconditional status update on every reconcile"
   - finding: status is updated on every reconcile even when no fields changed (`Minor`)
   - pass: status update is skipped or guarded by a comparison when nothing changed
   - not-observed: no status updates in scope
+  - > **Deterministic mode**: defaults to `not-observed`. The analyzer tracks status update sites but does not detect whether updates are guarded by equality comparison. In exploratory mode, use `go_file_context` on status update call sites to inspect guard logic.
 
 - **7c. SSA usage is coherent**
   - title: "Incoherent SSA field manager usage"
   - finding: SSA is used with conflicting field managers or mixed with non-SSA updates on the same resource (`Major`)
   - pass: SSA field owner is consistent and not mixed with Update/Patch on the same fields
   - not-observed: no SSA usage in scope
+  - > **Deterministic mode**: defaults to `not-observed`. The analyzer does not extract SSA `Apply()` calls or field manager strings. In exploratory mode, use `go_search` for `client.Apply` and `FieldOwner` patterns.
 
 - **7d. Helm/Kustomize rendering in reconcile loop is clearly gated**
   - title: "Helm/Kustomize rendering runs in reconcile loop without clear gating"
-  - finding: a Helm/Kustomize library call is reachable from `Reconcile` and there is no clear state or input gate preventing fresh render work on repeated reconciles (`Minor`; escalate to `Major` when render work is clearly repeated across unconditional paths or paired with repeated chart/base reads)
+  - finding: a Helm/Kustomize library call is reachable from `Reconcile` and there is no clear state or input gate preventing fresh render work on repeated reconciles (`Minor`; escalate to `Major` only when the same chart or base is loaded from disk AND rendered on every reconcile iteration with no generation, content-hash, or resource-version guard on the render path)
   - pass: render calls are outside the reconcile loop, or reconcile-path rendering is clearly gated by generation, content hash, resource version, or equivalent input-change checks
   - not-observed: no `controller.library_invocations` entries with `invoked_in_reconcile_loop=true`
   - evidence: use `controller.library_invocations` to identify render-related call sites in `Reconcile` or repo-local helpers/functions/methods reached from `Reconcile`
@@ -297,18 +300,21 @@ Use area names exactly as written in the section headings below.
   - finding: same GVK is read via both cached and uncached clients without clear justification (`Major`)
   - pass: each GVK uses a consistent client type
   - not-observed: cannot determine client type per GVK
+  - > **Deterministic mode**: defaults to `not-observed`. The analyzer records `api_calls` but does not distinguish cached vs. uncached client receivers. In exploratory mode, use `go_file_context` on the reconciler struct to resolve client field types per call.
 
 - **9b. Cached reads match watched resources**
   - title: "Cached reads for unwatched resources"
   - finding: controller reads from cache for a resource it does not watch, getting stale data (`Major`)
   - pass: all cached reads are for watched resources
   - not-observed: cannot determine watch-to-read mapping
+  - > **Deterministic mode**: defaults to `not-observed`. The analyzer provides `owns`, `watches`, and `api_calls` but cannot confirm client type per call. In exploratory mode, cross-reference resolved client types with watch/owns lists.
 
 - **9c. Mixed typed and unstructured informers**
   - title: "Duplicate informers from mixed typed and unstructured watches"
   - finding: same resource is watched via both typed and unstructured informers, causing double cache entries (`Major` only when it creates concrete duplication or correctness risk, otherwise `Minor`)
   - pass: each resource uses one informer type
   - not-observed: no mixed informer patterns in scope
+  - > **Deterministic mode**: defaults to `not-observed`. The analyzer does not track `unstructured.Unstructured` usage in watch/informer setup. In exploratory mode, use `go_search` for `unstructured.Unstructured` in watch setup code.
 
 #### 10. Spec-Status Contract Boundary
 

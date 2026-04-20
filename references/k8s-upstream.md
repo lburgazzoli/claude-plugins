@@ -18,6 +18,22 @@ Use these upstream references as the authoritative source for conventions:
 - [Controller Development Pitfalls](https://ahmet.im/blog/controller-pitfalls/)
 - [CRD Generation Pitfalls](https://ahmet.im/blog/crd-generation-pitfalls/)
 
+## Skill Ownership Matrix
+
+When the same user-facing concern spans multiple assessment skills, this matrix defines which skill is authoritative. The orchestrator (`k8s.controller-assessment`) uses this during merge to resolve overlapping findings.
+
+| Concern | Owner | Other skill | Boundary |
+|---------|-------|-------------|----------|
+| Schema evolution, markers, validation, webhooks | **api** | — | API design correctness |
+| Conversion strategy vs. schema differences | **api** (2c) | lifecycle (4a) | api owns the design question; lifecycle owns the operational question. Orchestrator merges with api as primarySource. |
+| Served/deprecated version intent | **api** (2b) | lifecycle (4b) | api owns flag consistency; lifecycle owns migration docs/tooling existence. Complementary, not duplicates. |
+| Storage version designation | **api** (2a) | lifecycle (4c) | api owns "exactly one storage version"; lifecycle owns "repo shows migration awareness". Both may appear. |
+| Leader election, shutdown, signal handling | **lifecycle** | — | Operational lifecycle |
+| Webhook certificate provisioning visibility | **lifecycle** | — | Operational lifecycle |
+| Test coverage, observability, security hardening | **production-readiness** | — | Production readiness |
+| RBAC, idempotency, finalizers, status, requeue | **architecture** | — | Controller architecture |
+| OpenShift TLS compliance | **production-readiness** | — | Platform compliance |
+
 ## Reference Implementations
 
 - [cluster-api](https://github.com/kubernetes-sigs/cluster-api) - declarative cluster lifecycle management, strong example of multi-provider architecture ([docs](https://cluster-api.sigs.k8s.io/))

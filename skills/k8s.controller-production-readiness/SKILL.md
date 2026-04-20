@@ -149,8 +149,8 @@ Use area names exactly as written in the section headings below.
 
 - **2c. Metrics cover reconcile or business-critical behavior**
   - title: "No reconcile or business-critical metrics"
-  - finding: no custom metrics cover reconcile duration or business-critical controller behavior (`Minor`; escalate to `Major` when the controller clearly manages externally visible workflows)
-  - pass: metrics cover reconcile duration or business-critical behavior
+  - finding: no custom metrics cover reconcile duration or business-critical controller behavior (`Minor`; escalate to `Major` only when the controller has a specific code path worth tracking — e.g., external service calls, rendering operations, or data pipeline stages — and no custom metric records its frequency, duration, or error rate)
+  - pass: metrics cover reconcile duration or business-critical behavior, OR the controller has no specific code paths that would benefit from custom metrics beyond framework defaults (controller-runtime default metrics are sufficient for simple reconcile loops)
   - not-observed: no metrics registration in scope
 
 ### 3. Deployment Hardening
@@ -178,10 +178,13 @@ Use area names exactly as written in the section headings below.
   - finding: no network policy exists and the repository clearly targets hardened or multi-tenant environments (`Minor`)
   - pass: network policy is defined, OR the repository does not target hardened/multi-tenant environments
   - not-observed: cannot determine target environment from scope
+  - > **Deterministic mode**: the analyzer detects `networkpolicy_manifest` presence. Whether the repo targets "hardened" or "multi-tenant" environments requires human judgment. Default to `not-observed` if no NetworkPolicy manifests exist and the target environment cannot be determined from repository metadata alone.
 
 ### 4. OpenShift TLS Configuration Compliance
 
 Apply this area only when repository evidence shows the controller targets OpenShift.
+
+> **Deterministic mode**: no OpenShift-specific facts are extracted by the analyzer. If no OpenShift targeting evidence is found (no `openshift` in go.mod dependencies, no openshift-specific deployment files, no `oc` CLI references), default the entire Area 4 to `not-observed` without further analysis. Identifying OpenShift targeting requires exploratory-mode grep for `openshift` in imports, Makefile, and deployment manifests.
 
 - **4a. No hardcoded TLS settings overriding platform-managed TLS**
   - title: "Hardcoded TLS settings override platform-managed TLS"

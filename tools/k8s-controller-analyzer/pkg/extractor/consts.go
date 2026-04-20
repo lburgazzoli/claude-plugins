@@ -128,6 +128,7 @@ const (
 	RuleDeploymentManifest    = "deployment-manifest"
 	RuleNetworkPolicyManifest = "networkpolicy-manifest"
 	RuleTestDiscovery         = "test-discovery"
+	RuleCertProvisioning      = "cert-provisioning"
 	RuleManifest              = "manifest"
 )
 
@@ -147,6 +148,7 @@ const (
 	KindDeploymentManifest    = "deployment_manifest"
 	KindNetworkPolicyManifest = "networkpolicy_manifest"
 	KindTestDiscovery         = "test_discovery"
+	KindCertProvisioning      = "cert_provisioning"
 	KindManifest              = "manifest"
 	KindManagerConfig         = "manager_config"
 )

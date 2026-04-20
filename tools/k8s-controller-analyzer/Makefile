@@ -31,6 +31,9 @@ test-tool: build ## Run analyzer smoke tests on testdata fixture
 	@echo ""
 	@echo "=== Running analyzer against testdata (--skill production-readiness) ==="
 	$(BUILD_DIR)/$(BINARY) $(TESTDATA_DIR) $(STRICT_FLAGS) --skill production-readiness --format json | jq '{manifest_count: .manifest.count, manifest_hash: .manifest.hash, categories: [.manifest.entries[] | .category] | unique}'
+	@echo ""
+	@echo "=== Running analyzer against testdata (--skill lifecycle) ==="
+	$(BUILD_DIR)/$(BINARY) $(TESTDATA_DIR) $(STRICT_FLAGS) --skill lifecycle --format json | jq '{manifest_count: .manifest.count, manifest_hash: .manifest.hash, categories: [.manifest.entries[] | .category] | unique}'
 
 test-wrapper: ## Run wrapper smoke tests (both argument orders)
 	@echo "=== Running wrapper smoke tests (path-first / flags-first) ==="

@@ -430,6 +430,14 @@ type ManifestEntry struct {
 	Path     string `json:"path"`
 }
 
+// CertProvisioningData holds a detected certificate provisioning signal.
+// One fact is emitted per signal; the lifecycle skill checks for the presence of any.
+type CertProvisioningData struct {
+	Mechanism string `json:"mechanism"`        // "cert-manager", "openshift-service-ca", "certdir"
+	Source    string `json:"source"`            // "yaml" or "go"
+	Detail    string `json:"detail,omitempty"` // e.g., annotation value, CertDir path
+}
+
 // ManagerConfigData holds extracted manager configuration from main/cmd.
 type ManagerConfigData struct {
 	LeaderElection             bool   `json:"leader_election"`

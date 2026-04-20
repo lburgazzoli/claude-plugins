@@ -107,6 +107,151 @@ add the corresponding extraction to the relevant extractor file.
 | has_signal_handler               | Whether ctrl.SetupSignalHandler() is used                         |
 | graceful_shutdown_timeout        | GracefulShutdownTimeout value if set                              |
 
+## RBAC Manifest Extractor (`extractor/yaml_rbac.go`)
+
+| Rule ID                  | Skill                              | Fields used                                                             | Added |
+|--------------------------|------------------------------------|-------------------------------------------------------------------------|-------|
+| rbac-manifest            | k8s.controller-architecture (3a-d) | name, kind, namespace, rules, permissions, has_wildcard, has_wildcard_group, has_wildcard_resource, has_wildcard_verb, has_events | v0.2  |
+
+### RBAC manifest fact fields
+
+| Field               | Description                                                       |
+|---------------------|-------------------------------------------------------------------|
+| name                | Name of the Role/ClusterRole/RoleBinding/ClusterRoleBinding       |
+| kind                | Kubernetes resource kind                                          |
+| namespace           | Namespace (empty for cluster-scoped)                              |
+| rules               | Array of RBAC rules with api_groups, resources, verbs             |
+| permissions         | Normalized permission tuples                                      |
+| has_wildcard        | Whether any rule uses a wildcard                                  |
+| has_wildcard_group  | Whether any rule has a wildcard API group                         |
+| has_wildcard_resource | Whether any rule has a wildcard resource                        |
+| has_wildcard_verb   | Whether any rule has a wildcard verb                              |
+| has_events          | Whether the RBAC grants event create/patch permissions            |
+
+## CRD Manifest Extractor (`extractor/yaml_crd.go`)
+
+| Rule ID                  | Skill                                          | Fields used                                                             | Added |
+|--------------------------|-------------------------------------------------|-------------------------------------------------------------------------|-------|
+| crd-manifest             | k8s.controller-api (2a-d), k8s.controller-lifecycle (4a-c) | name, group, kind, scope, versions, conversion_strategy, served_version_count, has_multiple_served | v0.3  |
+
+### CRD manifest fact fields
+
+| Field                | Description                                                       |
+|----------------------|-------------------------------------------------------------------|
+| name                 | CRD metadata name                                                 |
+| group                | API group                                                         |
+| kind                 | CRD kind                                                          |
+| scope                | Namespaced or Cluster                                             |
+| versions             | Array of version entries (name, storage, served, deprecated)      |
+| conversion_strategy  | Conversion strategy (None, Webhook, etc.)                         |
+| served_version_count | Number of versions with served=true                               |
+| has_multiple_served  | Whether more than one version is served                           |
+
+## Webhook Manifest Extractor (`extractor/yaml_webhook.go`)
+
+| Rule ID                  | Skill                                            | Fields used                     | Added |
+|--------------------------|--------------------------------------------------|---------------------------------|-------|
+| webhook-manifest         | k8s.controller-api (3a-e), k8s.controller-lifecycle (3a) | name, kind, webhooks      | v0.3  |
+
+### Webhook manifest fact fields
+
+| Field    | Description                                                             |
+|----------|-------------------------------------------------------------------------|
+| name     | Configuration resource name                                             |
+| kind     | ValidatingWebhookConfiguration or MutatingWebhookConfiguration          |
+| webhooks | Array of webhook entries (name, failure_policy, side_effects, timeout_seconds, reinvocation_policy, scopes) |
+
+## Deployment Manifest Extractor (`extractor/yaml_deployment.go`)
+
+| Rule ID                  | Skill                                                    | Fields used                                   | Added |
+|--------------------------|----------------------------------------------------------|-----------------------------------------------|-------|
+| deployment-manifest      | k8s.controller-production-readiness (3a-c), k8s.controller-lifecycle (2a-b) | name, kind, namespace, containers, security_context | v0.3  |
+
+### Deployment manifest fact fields
+
+| Field            | Description                                                       |
+|------------------|-------------------------------------------------------------------|
+| name             | Deployment/StatefulSet name                                       |
+| kind             | Deployment or StatefulSet                                         |
+| namespace        | Namespace                                                         |
+| containers       | Array of container entries (name, requests, limits, security_context, has_liveness, has_readiness) |
+| security_context | Pod-level security context                                        |
+
+## NetworkPolicy Manifest Extractor (`extractor/yaml_networkpolicy.go`)
+
+| Rule ID                  | Skill                                       | Fields used                 | Added |
+|--------------------------|---------------------------------------------|-----------------------------|-------|
+| networkpolicy-manifest   | k8s.controller-production-readiness (3d)    | name, namespace, policy_types | v0.4  |
+
+### NetworkPolicy manifest fact fields
+
+| Field        | Description                                          |
+|--------------|------------------------------------------------------|
+| name         | NetworkPolicy name                                   |
+| namespace    | Namespace                                            |
+| policy_types | Policy types (Ingress, Egress)                       |
+
+## Certificate Provisioning Extractor (`extractor/yaml_cert_provisioning.go`, `extractor/cert_provisioning.go`)
+
+| Rule ID                  | Skill                              | Fields used                  | Added |
+|--------------------------|------------------------------------|------------------------------|-------|
+| cert-provisioning        | k8s.controller-lifecycle (3a)      | mechanism, source, detail    | v0.5  |
+
+Detects certificate provisioning signals from both YAML manifests and Go code. One fact is emitted per detected signal.
+
+### YAML signals detected
+
+| Signal | Resource Kind | Detection |
+|--------|--------------|-----------|
+| cert-manager Certificate | Certificate | `spec.issuerRef` present |
+| cert-manager CA injection | Webhook configs | `cert-manager.io/inject-ca-from` annotation |
+| OpenShift serving-cert | Service | `service.beta.openshift.io/serving-cert-secret-name` annotation |
+
+### Go code signals detected
+
+| Signal | Detection |
+|--------|-----------|
+| CertDir assignment | `someOptions.CertDir = value` or `Options{CertDir: value}` in main/cmd packages |
+| Cert-related flags | `flag.StringVar` with names: `cert-dir`, `metrics-cert-path`, `tls-cert-file`, `webhook-cert-dir` |
+
+### Certificate provisioning fact fields
+
+| Field     | Description                                          |
+|-----------|------------------------------------------------------|
+| mechanism | Provisioning mechanism: `cert-manager`, `openshift-service-ca`, or `certdir` |
+| source    | Evidence source: `yaml` or `go`                      |
+| detail    | Mechanism-specific detail (issuer name, annotation value, CertDir path, flag name) |
+
+## Test Discovery (`internal/cli/run.go`)
+
+| Rule ID                  | Skill                                       | Fields used    | Added |
+|--------------------------|---------------------------------------------|----------------|-------|
+| test-discovery           | k8s.controller-production-readiness (1a-c)  | files, count   | v0.3  |
+
+### Test discovery fact fields
+
+| Field  | Description                                          |
+|--------|------------------------------------------------------|
+| files  | Array of discovered test file relative paths         |
+| count  | Total number of test files                           |
+
+## Manifest (`extractor/manifest.go`)
+
+| Rule ID                  | Skill    | Fields used                    | Added |
+|--------------------------|----------|--------------------------------|-------|
+| manifest                 | all      | skill, count, hash, entries    | v0.3  |
+
+The manifest is a per-skill file inventory with a deterministic hash for auditability. It is emitted only when the `--skill` flag is provided.
+
+### Manifest fact fields
+
+| Field   | Description                                          |
+|---------|------------------------------------------------------|
+| skill   | Skill name that scoped this manifest                 |
+| count   | Number of entries in the manifest                    |
+| hash    | First 12 chars of SHA-256 over skill + sorted entries |
+| entries | Array of categorized file paths (category, path)     |
+
 ## Common fact envelope
 
 Every emitted fact uses the same outer shape:

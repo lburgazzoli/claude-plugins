@@ -67,6 +67,7 @@ The analyzer provides facts relevant to this skill:
 - `manager_config` — leader election settings, signal handler detection, graceful shutdown timeout
 - `deployment_manifest` — deployment configuration
 - `webhook_manifest` — webhook presence (implies certificate lifecycle concern)
+- `cert_provisioning` — detected certificate provisioning signals (cert-manager, OpenShift service-ca, CertDir)
 - `crd_manifest` — multi-version serving, conversion strategy, deprecated versions
 
 ### Fact-to-checklist mapping
@@ -77,7 +78,7 @@ The analyzer provides facts relevant to this skill:
 | `manager_config.leader_election_release_on_cancel` | 1d (Leader release) |
 | `manager_config.has_signal_handler` | 2a (Signal handling) |
 | `manager_config.graceful_shutdown_timeout` | 2b (Shutdown timeout) |
-| `webhook_manifest` presence | 3a (Webhook certificate) |
+| `webhook_manifest` presence + `cert_provisioning` presence/absence | 3a (Webhook certificate) |
 | `crd_manifest.has_multiple_served` + `crd_manifest.conversion_strategy` | 4a (Multi-version conversion) |
 | `crd_manifest.versions[].deprecated` + `crd_manifest.versions[].served` | 4b (Deprecated migration) |
 | `crd_manifest.has_multiple_served` + `crd_manifest.served_version_count` | 4c (Storage version migration) |
@@ -158,6 +159,7 @@ Use area names exactly as written in the section headings below.
   - finding: admission webhooks are configured but no certificate provisioning mechanism is visible (no cert-manager annotations, no controller-runtime cert directory configuration, no OLM annotations) (`Major`)
   - pass: certificate provisioning is visible through cert-manager annotations, controller-runtime webhook.Server CertDir, or equivalent mechanism
   - not-observed: no admission webhooks in scope
+  - evidence: if `webhook_manifest` facts exist, check for `cert_provisioning` facts. If any `cert_provisioning` fact exists (any mechanism) → pass. If none → finding.
 
 ### 4. CRD Upgrade Safety
 
@@ -167,6 +169,7 @@ Use area names exactly as written in the section headings below.
   - pass: conversion strategy is `Webhook` or only one version is served, OR all served versions have identical schemas
   - not-observed: no multi-version CRDs in scope
   - evidence: use `crd_manifest.has_multiple_served` and `crd_manifest.conversion_strategy`
+  - > **Ownership**: this skill owns the operational/upgrade angle (silent data loss). API skill 2c owns the design angle (strategy vs. schema diff). When both fire on the same CRD, the orchestrator merges with api as primarySource.
 
 - **4b. Deprecated versions have a migration path**
   - title: "Deprecated CRD version served without migration guidance"
@@ -174,12 +177,14 @@ Use area names exactly as written in the section headings below.
   - pass: deprecated versions have visible migration documentation, OR the deprecated version is no longer served
   - not-observed: no deprecated versions in scope
   - evidence: use `crd_manifest.versions[].deprecated` and `crd_manifest.versions[].served`
+  - > **Deterministic mode**: assess only the coarse signal from `crd_manifest` facts (deprecated + still served). Migration documentation search requires exploratory mode with grep through docs, README, and changelog.
 
 - **4c. Storage version change is coordinated**
   - title: "Storage version change without migration awareness"
   - finding: a CRD has multiple versions with one marked as storage, but neither the controller code nor the repository shows awareness of stored version migration (no references to `storedVersions`, storage migration, or version migration tooling) (`Major`)
   - pass: single-version CRD, OR the controller or repository contains storage migration awareness
   - not-observed: no multi-version CRDs in scope
+  - > **Deterministic mode**: assess only the coarse signal from `crd_manifest` facts (`has_multiple_served`). Storage version migration awareness (storedVersions search, migration tooling) requires exploratory mode with grep.
 
 ## Anti-Findings
 
@@ -302,6 +307,13 @@ Include this section when one or more findings or highlights changed during the 
 ### Highlights
 
 Include only positive highlights that do not contradict any finding.
+
+#### Upgrade ordering highlight
+
+If both `webhook_manifest` and `crd_manifest` facts exist, include this highlight:
+> "This controller serves webhooks and CRDs. Upgrade ordering matters: deploy CRDs before webhook configs, and webhook configs before the controller Deployment, to avoid rejected requests during rollout."
+
+This is informational — no score impact.
 
 ### Notes
 

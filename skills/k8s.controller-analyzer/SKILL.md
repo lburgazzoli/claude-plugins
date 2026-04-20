@@ -32,6 +32,7 @@ Read all of the following files before performing any checks:
 ### Skill sources
 - `skills/k8s.controller-architecture/SKILL.md` — architecture assessment checklist and fact-to-checklist mapping
 - `skills/k8s.controller-api/SKILL.md` — API conventions assessment checklist and fact-to-checklist mapping
+- `skills/k8s.controller-lifecycle/SKILL.md` — lifecycle assessment checklist and fact-to-checklist mapping
 - `skills/k8s.controller-production-readiness/SKILL.md` — production readiness assessment checklist and fact-to-checklist mapping
 - `skills/k8s.controller-assessment/SKILL.md` — orchestrator flow and analyzer fan-out contract
 
@@ -84,7 +85,7 @@ For every row in EXTRACTORS.md:
 
 ### 5. Skill analyzer section consistency
 
-For each leaf skill (architecture, api, production-readiness):
+For each leaf skill (architecture, api, lifecycle, production-readiness):
 - The `## Static Analyzer` section MUST exist
 - It MUST reference `references/analyzer-output-schema.md` as the analyzer input contract
 - It MUST reference the correct `--skill` flag value
@@ -106,10 +107,10 @@ For `skills/k8s.controller-architecture/SKILL.md` specifically:
 
 For the orchestrator skill (`k8s.controller-assessment`):
 - It MUST reference `references/analyzer-output-schema.md` as the analyzer input contract
-- It MUST state that the analyzer is run once before child skills
-- It MUST state that child skills consume the already-loaded analyzer JSON
+- It MUST state that each child skill runs the analyzer independently with its own `skill` parameter
+- It MUST NOT instruct running a shared analyzer step at the orchestrator level
 
-**Finding**: the orchestrator skill does not accurately describe the shared analyzer-input contract.
+**Finding**: the orchestrator skill does not accurately describe the per-skill analyzer contract.
 
 ### 6. YAML extractor coverage
 
@@ -121,7 +122,7 @@ For each YAML fact kind (`rbac_manifest`, `crd_manifest`, `webhook_manifest`, `d
 
 ### 7. Manifest builder coverage
 
-For each valid `--skill` value (`architecture`, `api`, `production-readiness`):
+For each valid `--skill` value (`architecture`, `api`, `lifecycle`, `production-readiness`):
 - The manifest builder in `manifest.go` MUST produce categories matching the skill's expected evidence categories
 - Run: use the `analyze_controller` MCP tool with `repo_path` set to `tools/k8s-controller-analyzer/testdata/simple-operator` (absolute path) and `skill` set to the skill being tested
 - Verify the output has a `manifest` section with `count > 0` and a 12-character `hash`

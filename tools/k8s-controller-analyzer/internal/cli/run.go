@@ -72,6 +72,8 @@ func RunTo(w io.Writer, opts Options) error {
 	facts = append(facts, extractor.ExtractWebhookManifests(walk.YAMLDocs)...)
 	facts = append(facts, extractor.ExtractDeploymentManifests(walk.YAMLDocs)...)
 	facts = append(facts, extractor.ExtractNetworkPolicyManifests(walk.YAMLDocs)...)
+	facts = append(facts, extractor.ExtractCertProvisioning(walk.YAMLDocs)...)
+	facts = append(facts, extractor.ExtractCertProvisioningFromGo(pkgs, repoPath)...)
 
 	if len(walk.TestFiles) > 0 {
 		facts = append(facts, extractor.NewFact(

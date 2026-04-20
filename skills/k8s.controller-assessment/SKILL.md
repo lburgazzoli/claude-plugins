@@ -27,6 +27,34 @@ Consult [analyzer-output-schema.md](../../references/analyzer-output-schema.md) 
 Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report model.
 Consult [reproducible-assessments.md](../../references/reproducible-assessments.md) for deterministic execution rules.
 
+## Skill Ownership Matrix
+
+When the same user-facing concern spans multiple skills, this matrix defines which skill is authoritative. The orchestrator uses this during merge to resolve overlapping findings.
+
+| Concern | Owner | Other skill | Boundary |
+|---------|-------|-------------|----------|
+| Schema evolution, markers, validation, webhooks | **api** | — | API design correctness |
+| Conversion strategy vs. schema differences | **api** (2c) | lifecycle (4a) | api owns the design question ("is the conversion strategy appropriate for the schema diff?"); lifecycle owns the operational question ("will the cluster silently lose data during upgrade?"). If both fire on the same CRD, keep api as primarySource and merge lifecycle into it. |
+| Served/deprecated version intent | **api** (2b) | lifecycle (4b) | api owns whether flags are consistent; lifecycle owns whether migration docs/tooling exist. These are complementary, not duplicates — both may appear. |
+| Storage version designation | **api** (2a) | lifecycle (4c) | api owns "exactly one storage version is marked"; lifecycle owns "the repo shows migration awareness". Both may appear. |
+| Leader election, shutdown, signal handling | **lifecycle** | — | Operational lifecycle |
+| Webhook certificate provisioning visibility | **lifecycle** | — | Operational lifecycle |
+| Test coverage, observability, security hardening | **production-readiness** | — | Production readiness |
+| RBAC, idempotency, finalizers, status, requeue | **architecture** | — | Controller architecture |
+| OpenShift TLS compliance | **production-readiness** | — | Platform compliance |
+
+### Merge rule for overlapping CRD version findings
+
+When api item 2c and lifecycle item 4a both fire for the same CRD:
+- Merge into a single finding with `primarySource: k8s.controller-api`
+- Use api's title, severity, and fix (which focuses on schema/conversion design)
+- Add lifecycle's `where` and `notVerified` entries to the merged finding
+- The lifecycle concern (silent data loss during upgrade) should appear in the merged `why`
+
+When api 2b and lifecycle 4b both fire:
+- Keep as separate findings — they test different things (flag consistency vs. migration docs)
+- No merge, no dedup
+
 ## Inputs
 
 - `$ARGUMENTS` may contain:
@@ -50,13 +78,11 @@ Consult [reproducible-assessments.md](../../references/reproducible-assessments.
 
 ## Pre-Assessment Setup
 
-Before invoking any child skill, run the static analyzer once. This avoids triple-running across child skills.
+Each child skill runs the `analyze_controller` MCP tool independently with its own `skill` parameter during its Deterministic Procedure step 2. This ensures each child gets its own skill-specific `manifest.hash` for auditability.
 
-Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads passed to child skills.
+The orchestrator does not run a shared analyzer step. Its only setup responsibility is resolving the repository path and validating scope/mode flags.
 
-Use the `analyze_controller` MCP tool with `repo_path` set to the repository root (omit `skill` since each child skill needs different manifest categories).
-
-Load the full JSON output into context. Child skills detect the already-loaded analyzer JSON and skip their own run step. Each child skill will reference the loaded facts directly.
+Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads consumed by child skills.
 
 ## Child Invocation Rules
 
@@ -77,8 +103,8 @@ Build child arguments in this order:
 
 In deterministic mode:
 
-0. Run Pre-Assessment Setup (build and run static analyzer, load JSON into context).
-1. Run child skills sequentially in this fixed order:
+0. Run Pre-Assessment Setup (resolve repository path, validate flags).
+1. Run child skills sequentially in this fixed order (each runs its own analyzer call):
    - `k8s.controller-architecture`
    - `k8s.controller-api`
    - `k8s.controller-lifecycle`

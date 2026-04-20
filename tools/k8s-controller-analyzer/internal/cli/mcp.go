@@ -10,7 +10,7 @@ import (
 
 type analyzeInput struct {
 	RepoPath string `json:"repo_path" jsonschema:"absolute path to the Kubernetes controller repository to analyze"`
-	Skill    string `json:"skill,omitempty" jsonschema:"skill name for manifest generation: architecture, api, or production-readiness"`
+	Skill    string `json:"skill,omitempty" jsonschema:"skill name for manifest generation: architecture, api, lifecycle, or production-readiness"`
 	Rules    string `json:"rules,omitempty" jsonschema:"comma-separated list of rules to extract (default: all)"`
 }
 
@@ -61,7 +61,7 @@ func NewMCPCmd() *cobra.Command {
 
 			mcp.AddTool(server, &mcp.Tool{
 				Name:        "analyze_controller",
-				Description: "Extract structured facts from a Kubernetes controller repository for architecture, API conventions, and production readiness assessment",
+				Description: "Extract structured facts from a Kubernetes controller repository for architecture, API conventions, lifecycle, and production readiness assessment",
 			}, analyze)
 
 			return server.Run(cmd.Context(), &mcp.StdioTransport{})

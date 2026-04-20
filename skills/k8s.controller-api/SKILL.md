@@ -264,6 +264,8 @@ Use area names exactly as written in the section headings below.
   - finding: versions have schema differences but the CRD uses `None` conversion strategy, or a webhook conversion is configured but schemas are identical (`Critical`)
   - pass: conversion strategy is appropriate for the schema differences between versions
   - not-observed: no multi-version CRDs in scope
+  - > **Ownership**: this skill owns the design question (is the strategy appropriate for the schema diff?). Lifecycle 4a owns the operational question (will upgrade silently lose data?). When both fire, the orchestrator merges with this skill as primarySource.
+  - > **Deterministic mode**: assess only the coarse signal — if `has_multiple_served` is true and `conversion_strategy` is `None`, raise a finding. The analyzer does not perform schema-diff between CRD versions, so detailed schema comparison requires exploratory mode with `go_file_context` on API type files across versions.
 
 - **2d. Version evolution is additive**
   - title: "Non-additive version evolution without migration"
@@ -342,6 +344,7 @@ Skip this area if no admission webhook assets exist in scope.
   - finding: the committed CRD manifest does not match what the current markers and types would generate (`Major`)
   - pass: committed CRD manifests are consistent with the current type definitions and markers
   - not-observed: no committed CRD manifests in scope
+  - > **Deterministic mode**: skip this item entirely. Verification requires running `controller-gen` to produce expected output and comparing against committed manifests. In exploratory mode, compare `crd_type` facts against committed CRD YAML from the manifest.
 
 ### 5. List Type and Merge Semantics
 
@@ -384,18 +387,21 @@ Skip this area if no admission webhook assets exist in scope.
   - finding: the `Default()` method modifies fields unconditionally without checking their current value, meaning applying it twice produces different results or overwrites user-set values (`Major`)
   - pass: `Default()` checks whether fields are already set (nil/zero checks) before applying defaults
   - not-observed: no defaulting webhook in scope
+  - > **Deterministic mode**: requires gopls inspection of the `Default()` handler body. Use `go_file_context` on the webhook handler file identified by `webhook` facts with `type == "defaulting"`. If gopls is unavailable, defaults to `not-observed`.
 
 - **7b. Schema defaults are consistent with webhook defaults**
   - title: "Schema defaults inconsistent with webhook defaults"
   - finding: `+kubebuilder:default` markers set a different value than the `Default()` webhook method for the same field, creating order-dependent behavior (`Major`)
   - pass: schema defaults and webhook defaults agree, OR only one mechanism is used
   - not-observed: no defaulting webhook or no schema defaults in scope
+  - > **Deterministic mode**: requires gopls inspection of the `Default()` handler body to compare against `crd_field.markers` defaults. Use `go_file_context` on the webhook handler file. If gopls is unavailable, defaults to `not-observed`.
 
 - **7c. Defaulting does not set user-owned fields**
   - title: "Defaulting webhook sets user-owned spec fields"
   - finding: the `Default()` method unconditionally writes to spec fields that the user should control, causing SSA field ownership conflicts where the webhook field manager competes with the user (`Major`)
   - pass: `Default()` only sets fields that have no user-meaningful zero value, OR uses SSA-aware patterns
   - not-observed: no defaulting webhook in scope
+  - > **Deterministic mode**: requires gopls inspection of the `Default()` handler body. Use `go_file_context` on the webhook handler file. If gopls is unavailable, defaults to `not-observed`.
 
 - **7d. Webhook reinvocation policy is explicit**
   - title: "Mutating webhook missing reinvocation policy"

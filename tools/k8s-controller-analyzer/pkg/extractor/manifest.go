@@ -90,6 +90,12 @@ func BuildManifest(
 				add("webhook", d.RelPath)
 			case "CustomResourceDefinition":
 				add("crd", d.RelPath)
+			case "Certificate":
+				add("cert-provisioning", d.RelPath)
+			case "Service":
+				if annotationValue(d.Data, "service.beta.openshift.io/serving-cert-secret-name") != "" {
+					add("cert-provisioning", d.RelPath)
+				}
 			}
 		}
 
@@ -109,6 +115,8 @@ func BuildManifest(
 				add("deployment", d.RelPath)
 			case "Kustomization":
 				add("deployment", d.RelPath)
+			case "NetworkPolicy":
+				add("networkpolicy", d.RelPath)
 			}
 		}
 	}
