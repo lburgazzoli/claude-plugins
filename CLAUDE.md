@@ -73,6 +73,7 @@ MCP servers are configured via `.mcp.json` at the plugin root. They:
 
 ## Development Guidelines
 
+- **Repository cloning**: when a repo needs to be cloned, always clone into `.context/repos/<repo-name>` with `--depth 1 --single-branch` (default branch only, shallow clone)
 - Keep skills focused on a single task
 - Document all environment variables and dependencies
 - Test with `claude --plugin-dir .` before committing
