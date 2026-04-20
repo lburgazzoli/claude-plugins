@@ -239,10 +239,10 @@ Use area names exactly as written in the section headings below.
   - pass: printer columns are defined on root types
   - not-observed: no root types in scope
 
-- **1i. Status struct includes observedGeneration**
-  - title: "Status struct missing observedGeneration field"
-  - finding: the status struct does not include an `observedGeneration` field to signal which `.metadata.generation` the controller last processed (`Major`)
-  - pass: the status struct includes an `observedGeneration int64` field with a `+optional` marker
+- **1i. Status struct includes ObservedGeneration**
+  - title: "Status struct missing ObservedGeneration field"
+  - finding: the status struct does not include an `ObservedGeneration` field to signal which `.metadata.generation` the controller last processed (`Major`)
+  - pass: the status struct includes an `ObservedGeneration int64` field with a `+optional` marker
   - not-observed: no status struct in scope
 
 ### 2. API Versioning

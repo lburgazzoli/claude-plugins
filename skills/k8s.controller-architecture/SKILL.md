@@ -186,7 +186,7 @@ Use area names exactly as written in the section headings below.
   - not-observed: no status conditions in scope
   - evaluation rule: collect the set of distinct condition types from `controller.status_condition_sets` (e.g., `{Available, Progressing}`). For each reconcile exit path that updates status or returns an error, check whether ALL condition types in the set are set. If any exit path sets only a subset of the condition types, that is a finding. A condition type that appears on some paths but not others can retain a stale value from a previous reconcile — this is the definition of "inconsistent" regardless of whether the omitted type is set to True or False when present.
 
-- **4b. observedGeneration is set on conditions**
+- **4b. ObservedGeneration is set on conditions**
   - title: "ObservedGeneration not set on status conditions"
   - finding: status subresource is enabled and `metav1.Condition` structs omit `ObservedGeneration` (`Major`)
   - pass: `ObservedGeneration` is set on all condition writes, OR status subresource is not used
