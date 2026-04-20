@@ -150,7 +150,7 @@ Use area names exactly as written in the section headings below.
 
 - **3a. RBAC markers match actual API calls**
   - title: "RBAC permissions do not match actual API usage"
-  - finding: RBAC grants permissions for resources the controller never accesses, OR the controller accesses resources without corresponding RBAC (`Major`)
+  - finding: RBAC grants permissions for resources the controller never accesses, OR the controller accesses resources without corresponding RBAC (`Major`). When reporting this finding, always list: (1) the permissions the controller requires (from `api_calls[].required_permissions` and `event_usages[].required_permissions`), and (2) the excess permissions granted but not required (from `rbac_manifest.permissions` minus required).
   - pass: RBAC markers align with actual client calls
   - not-observed: no RBAC markers or no client calls in scope
   - deterministic rule: treat the two branches differently. Missing required RBAC may be reported directly from concrete `controller.api_calls[].required_permissions` evidence. Extra or apparently unused RBAC should only be reported when the controller's concrete resource usage is observable from `controller.api_calls[].required_permissions`, `controller.event_usages[].required_permissions`, and manifests. If `controller.ambiguity_signals`, reconcile-loop rendering, or generic `unstructured.Unstructured` apply paths make the concrete rendered GVK set ambiguous, do not emit a scored unused-RBAC finding from the absence of matching `required_permissions` alone; use `not-observed`, or a `Low` confidence finding only when the ambiguity itself is the main point.
@@ -195,8 +195,8 @@ Use area names exactly as written in the section headings below.
 
 - **4c. Status writes do not overwrite unrelated data**
   - title: "Status writes overwrite unrelated controller data"
-  - finding: status update overwrites fields managed by another controller or the user (`Major`)
-  - pass: status updates target only controller-owned fields (conditions, a specific status struct)
+  - finding: status update overwrites fields managed by another controller or the user (`Minor`; escalate to `Major` only when the status subresource is shared with other controllers and the update does not scope writes to controller-owned fields)
+  - pass: status updates target only controller-owned fields (conditions, a specific status struct), OR the controller is the sole owner of the entire status subresource
   - not-observed: no status writes in scope
 
 - **4d. Status updates use consistent conflict handling**
