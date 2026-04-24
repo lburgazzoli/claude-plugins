@@ -21,10 +21,10 @@ This skill is primarily designed for Go controllers built with `controller-runti
 
 ## References
 
-Consult [k8s-upstream.md](../../references/k8s-upstream.md) for upstream conventions.
-Consult [analyzer-output-schema.md](../../references/analyzer-output-schema.md) for the analyzer JSON input contract.
-Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report model.
-Consult [reproducible-assessments.md](../../references/reproducible-assessments.md) for deterministic execution rules.
+Consult [upstream-conventions.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/upstream-conventions.md) for upstream conventions.
+Consult [analyzer-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md) for the analyzer JSON input contract.
+Consult [report-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/report-schema.md) for the canonical report model.
+Consult [deterministic-execution.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/deterministic-execution.md) for deterministic execution rules.
 
 ## Inputs
 
@@ -45,7 +45,7 @@ Consult [reproducible-assessments.md](../../references/reproducible-assessments.
 
 In deterministic mode, build and run the static analyzer to extract structured facts from Go code and YAML manifests. This is the single evidence source.
 
-Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads.
+Treat [analyzer-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads.
 
 ### Run
 
@@ -249,7 +249,7 @@ Interpretation:
 
 ## Output Format
 
-Produce the assessment using the canonical model from [validation-output-schema.md](../../references/validation-output-schema.md).
+Produce the assessment using the canonical model from [report-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/report-schema.md).
 
 Output conventions:
 

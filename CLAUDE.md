@@ -74,6 +74,8 @@ MCP servers are configured via `.mcp.json` at the plugin root. They:
 ## Development Guidelines
 
 - **Repository cloning**: when a repo needs to be cloned, always clone into `.context/repos/<repo-name>` with `--depth 1 --single-branch` (default branch only, shallow clone)
+- **Repository refs**: when a specific branch, tag, or commit is requested (e.g., `opendatahub-io/mlflow-operator@v2`), clone into `.context/repos/<repo-name>@<ref>` (e.g., `mlflow-operator@v2`). Use `--branch <ref>` for branches/tags. For commits, clone then `git fetch origin <sha> && git checkout <sha>`. The default-branch checkout at `.context/repos/<repo-name>` (no `@`) is never modified.
+- **Repository freshness**: when a skill or task targets a repo in `.context/repos/`, always `git fetch` and fast-forward (`git pull --ff-only`) before proceeding — stale checkouts produce stale results
 - Keep skills focused on a single task
 - Document all environment variables and dependencies
 - Test with `claude --plugin-dir .` before committing

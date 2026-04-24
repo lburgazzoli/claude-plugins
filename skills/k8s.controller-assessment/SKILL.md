@@ -23,9 +23,9 @@ Perform a comprehensive assessment of a Kubernetes controller by invoking four f
 
 ## References
 
-Consult [analyzer-output-schema.md](../../references/analyzer-output-schema.md) for the analyzer JSON input contract.
-Consult [validation-output-schema.md](../../references/validation-output-schema.md) for the canonical report model.
-Consult [reproducible-assessments.md](../../references/reproducible-assessments.md) for deterministic execution rules.
+Consult [analyzer-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md) for the analyzer JSON input contract.
+Consult [report-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/report-schema.md) for the canonical report model.
+Consult [deterministic-execution.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/deterministic-execution.md) for deterministic execution rules.
 
 ## Skill Ownership Matrix
 
@@ -82,7 +82,7 @@ Each child skill runs the `analyze_controller` MCP tool independently with its o
 
 The orchestrator does not run a shared analyzer step. Its only setup responsibility is resolving the repository path and validating scope/mode flags.
 
-Treat [analyzer-output-schema.md](../../references/analyzer-output-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads consumed by child skills.
+Treat [analyzer-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md) as the normative schema for the analyzer JSON envelope and fact payloads consumed by child skills.
 
 ## Child Invocation Rules
 
@@ -202,7 +202,7 @@ Interpretation:
 
 ## Output Format
 
-Produce the merged assessment using the canonical model from [validation-output-schema.md](../../references/validation-output-schema.md). When `--scope` selects a single child skill, use this orchestrator output format — not the child skill's native format. Unselected dimensions show `Not applicable`.
+Produce the merged assessment using the canonical model from [report-schema.md](${CLAUDE_SKILL_DIR}/../../references/k8s-controller/report-schema.md). When `--scope` selects a single child skill, use this orchestrator output format — not the child skill's native format. Unselected dimensions show `Not applicable`.
 
 Output conventions:
 

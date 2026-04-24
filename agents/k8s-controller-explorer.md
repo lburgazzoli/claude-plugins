@@ -47,7 +47,7 @@ subagent with a clean context window.
 Before exploring the target repository, read these reference files from the
 plugin directory for policy context:
 
-1. `${CLAUDE_PLUGIN_ROOT}/references/controller-exploration.md` — blind-start
+1. `${CLAUDE_PLUGIN_ROOT}/references/k8s-controller/exploration-protocol.md` — blind-start
    contract, discovery order, and output format
 2. `${CLAUDE_PLUGIN_ROOT}/skills/k8s.controller-architecture/SKILL.md` — borrow
    dimension names, area names, and checklist interpretation only

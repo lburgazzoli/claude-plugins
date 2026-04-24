@@ -23,11 +23,11 @@ Validate that the `k8s-controller-analyzer` Go tool and the `k8s.controller-*` a
 Read all of the following files before performing any checks:
 
 ### Analyzer sources
-- `references/analyzer-output-schema.md` — normative analyzer JSON input contract for skills
-- `tools/k8s-controller-analyzer/EXTRACTORS.md` — the living contract between rules and extractors
-- `tools/k8s-controller-analyzer/pkg/extractor/consts.go` — all rule ID and fact kind constants
-- `tools/k8s-controller-analyzer/pkg/extractor/types.go` — all data types for extracted facts
-- `tools/k8s-controller-analyzer/pkg/output/json.go` — analyzer report envelope and schema version
+- `${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md` — normative analyzer JSON input contract for skills
+- `${CLAUDE_SKILL_DIR}/../../tools/k8s-controller-analyzer/EXTRACTORS.md` — the living contract between rules and extractors
+- `${CLAUDE_SKILL_DIR}/../../tools/k8s-controller-analyzer/pkg/extractor/consts.go` — all rule ID and fact kind constants
+- `${CLAUDE_SKILL_DIR}/../../tools/k8s-controller-analyzer/pkg/extractor/types.go` — all data types for extracted facts
+- `${CLAUDE_SKILL_DIR}/../../tools/k8s-controller-analyzer/pkg/output/json.go` — analyzer report envelope and schema version
 
 ### Skill sources
 - `skills/k8s.controller-architecture/SKILL.md` — architecture assessment checklist and fact-to-checklist mapping
@@ -87,7 +87,7 @@ For every row in EXTRACTORS.md:
 
 For each leaf skill (architecture, api, lifecycle, production-readiness):
 - The `## Static Analyzer` section MUST exist
-- It MUST reference `references/analyzer-output-schema.md` as the analyzer input contract
+- It MUST reference `${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md` as the analyzer input contract
 - It MUST reference the correct `--skill` flag value
 - The `## gopls Verification Protocol` section MUST exist
 - The `## Deterministic Procedure` MUST reference the analyzer as step 2
@@ -106,7 +106,7 @@ For `skills/k8s.controller-architecture/SKILL.md` specifically:
 **Finding**: the architecture skill still documents RBAC reasoning only in terms of coarse raw fields and does not reflect the normalized signal contract.
 
 For the orchestrator skill (`k8s.controller-assessment`):
-- It MUST reference `references/analyzer-output-schema.md` as the analyzer input contract
+- It MUST reference `${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md` as the analyzer input contract
 - It MUST state that each child skill runs the analyzer independently with its own `skill` parameter
 - It MUST NOT instruct running a shared analyzer step at the orchestrator level
 
@@ -124,14 +124,14 @@ For each YAML fact kind (`rbac_manifest`, `crd_manifest`, `webhook_manifest`, `d
 
 For each valid `--skill` value (`architecture`, `api`, `lifecycle`, `production-readiness`):
 - The manifest builder in `manifest.go` MUST produce categories matching the skill's expected evidence categories
-- Run: use the `analyze_controller` MCP tool with `repo_path` set to `tools/k8s-controller-analyzer/testdata/simple-operator` (absolute path) and `skill` set to the skill being tested
+- Run: use the `analyze_controller` MCP tool with `repo_path` set to `${CLAUDE_SKILL_DIR}/../../tools/k8s-controller-analyzer/testdata/simple-operator` (absolute path) and `skill` set to the skill being tested
 - Verify the output has a `manifest` section with `count > 0` and a 12-character `hash`
 
 **Finding**: manifest builder produces empty or malformed output for a valid skill.
 
 ### 8. Analyzer schema contract consistency
 
-Use `references/analyzer-output-schema.md` as the canonical analyzer-input reference and verify:
+Use `${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md` as the canonical analyzer-input reference and verify:
 
 - The documented report envelope matches `pkg/output/json.go` (`schema_version`, `repo_path`, `extracted_at`, optional `manifest`, `facts`)
 - The fact envelope documents `rules`, `kind`, `file`, `line`, and `data`
@@ -184,7 +184,7 @@ For each finding:
 If any checks produce findings, list the recommended changes in priority order:
 1. Missing extractors (add code)
 2. Missing skill mappings (update SKILL.md)
-3. Stale analyzer schema references (update `references/analyzer-output-schema.md` and affected skills)
+3. Stale analyzer schema references (update `${CLAUDE_SKILL_DIR}/../../references/k8s-controller/analyzer-schema.md` and affected skills)
 4. Stale EXTRACTORS.md rows (update documentation)
 5. Orphaned constants (remove dead code)
 ```

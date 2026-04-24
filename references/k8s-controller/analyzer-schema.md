@@ -321,6 +321,6 @@ Payload fields:
 ## Relationship To Other References
 
 - Use this file for analyzer input semantics.
-- Use `references/validation-output-schema.md` for skill report output semantics.
+- Use `references/k8s-controller/report-schema.md` for skill report output semantics.
 - Use `tools/k8s-controller-analyzer/EXTRACTORS.md` for rule-to-field mapping and
   extractor coverage details.
