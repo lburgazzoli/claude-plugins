@@ -1,0 +1,47 @@
+# Schema for discrepancies.yaml
+#
+# Each entry documents a discrepancy between architecture-context docs
+# and actual code in component repos. Used by the context builder to
+# track stale docs and by personas to understand data quality.
+#
+# Validate with: yq '.[] | has("component") and has("description") and has("claim") and has("evidence") and has("resolution") and has("refs")' discrepancies.yaml
+
+type: array
+items:
+  type: object
+  required:
+    - component
+    - description
+    - claim
+    - evidence
+    - resolution
+    - refs
+  properties:
+    component:
+      type: string
+      description: Component name (e.g., KServe, MLflow, DSPO)
+    description:
+      type: string
+      description: Brief summary of the discrepancy
+    claim:
+      type: string
+      description: What the doc says (the incorrect or unverified data)
+    evidence:
+      type: string
+      description: What the actual code/data shows (the truth)
+    resolution:
+      type: string
+      description: Which data was used in context.md and why
+    refs:
+      type: array
+      minItems: 1
+      items:
+        type: string
+        pattern: "^.+#L[0-9]+"
+      description: |
+        All files consulted, using file#L{line} format.
+        For red-flag discrepancies, at least one ref MUST point to
+        the actual CRD YAML or code in the component repo.
+        Format examples:
+          - architecture-context:architecture/rhoai-3.4/kserve.md#L47
+          - red-hat-data-services/kserve@rhoai-3.4:config/crd/full/serving.kserve.io_servingruntimes.yaml#L30

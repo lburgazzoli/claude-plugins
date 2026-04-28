@@ -106,7 +106,6 @@ hooks/**/*.a
 .tmp/
 .context/
 !.claude/
-.claude/settings.local.json
 .cursor/
 .codex
 .codex/tools/k8s-controller-analyzer/k8s-controller-analyzer
