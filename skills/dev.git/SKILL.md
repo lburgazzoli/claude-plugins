@@ -41,6 +41,7 @@ Apply these regardless of task.
 5. **`--format=` for machine output** — when output will be parsed, use `--format=` to produce exactly the fields needed. Avoid parsing default pretty output.
 6. **Three-dot for branch comparison** — `git diff A...B` diffs against the fork point, not the tip of A. Use two-dot `A..B` only when you specifically want "commits reachable from B but not A".
 7. **`--first-parent` for mainline** — in merge-heavy repos, `--first-parent` shows only mainline merge commits, cutting through feature-branch noise.
+8. **`git -C` for other directories** — use `git -C <dir> <cmd>` instead of `cd <dir> && git <cmd>` to avoid directory changes and subshells.
 
 ## Intent dispatch
 
@@ -79,6 +80,7 @@ Match user intent to a single composed command.
 | `git blame file` (entire file) | `git blame -L start,end -- file` or `-L :funcname` |
 | `git log --all --oneline \| grep msg` | `git log --all --oneline --grep='msg'` |
 | `git log -S'x'` without path or file-type scope | `git log -S'x' -- '*.go'` or `-- path/` |
+| `cd <dir> && git rev-parse HEAD` | `git -C <dir> rev-parse HEAD` |
 
 ## Composition recipes
 
