@@ -80,7 +80,7 @@ Match user intent to a single composed command.
 | `git blame file` (entire file) | `git blame -L start,end -- file` or `-L :funcname` |
 | `git log --all --oneline \| grep msg` | `git log --all --oneline --grep='msg'` |
 | `git log -S'x'` without path or file-type scope | `git log -S'x' -- '*.go'` or `-- path/` |
-| `cd <dir> && git rev-parse HEAD` | `git -C <dir> rev-parse HEAD` |
+| `cd <dir> && git <anything>` | `git -C <dir> <anything>` (log, diff, blame, pull, fetch, rev-parse, etc.) |
 
 ## Composition recipes
 
@@ -110,4 +110,10 @@ git rev-list --count origin/main..HEAD
 
 # Commits that touched a symbol, across all branches
 git log -S'SymbolName' --all --oneline --source
+
+# Cross-directory: any git command works with -C
+git -C .context/repos/kserve log --oneline -n 10
+git -C .context/repos/odh-cli diff main...feature --stat
+git -C .context/repos/odh-gitops blame -L 1,20 -- components/operators/kserve/kustomization.yaml
+git -C .context/repos/architecture-context pull --ff-only
 ```
