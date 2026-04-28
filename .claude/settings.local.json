@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(acli jira workitem link list *)",
+      "Bash(acli jira workitem search *)",
+      "Bash(acli jira workitem view *)",
+      "Bash(gws calendar events get *)",
+      "Bash(gws calendar events list *)",
+      "Bash(gws docs documents get *)",
+      "Bash(gws drive list *)",
+      "Bash(gws drive files export *)",
+      "Bash(gws drive files get *)",
+      "Bash(gws drive files list *)",
+      "Bash(gws gmail users messages get *)",
+      "Bash(gws gmail users messages list *)",
+      "Bash(gws schema *)",
+      "Bash(jq *)",
+      "Bash(yq *)",
+      "Read(**)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:cursor.com)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:docs.cursor.com)",
+      "WebFetch(domain:docs.github.com)",
+      "WebFetch(domain:docs.redhat.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:scholar.google.com)",
+      "WebFetch(domain:thenewstack.io)",
+      "WebFetch(domain:www.cncf.io)",
+      "WebSearch",
+      "Bash(podman run *)",
+      "Bash(git rev-parse *)",
+      "Bash(python3 *skills/rhai.upgrade-assessment/scripts/*)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "k8s-controller-analyzer"
+  ],
+  "spinnerTipsEnabled": false
+}
