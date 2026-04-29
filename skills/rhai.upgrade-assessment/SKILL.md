@@ -1,6 +1,6 @@
 ---
 name: rhai.upgrade-assessment
-description: Multi-persona upgrade impact assessment for RHOAI version transitions. Spawns four independent clean-context agent reviewers (SRE, admin, engineer, architect) to assess upgrade risks. Usage - /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime]
+description: Multi-persona upgrade impact assessment for RHOAI version transitions. Spawns four independent clean-context agent reviewers (admin, engineer, solution-architect, SRE) to assess upgrade risks. Usage - /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime]
 user-invocable: true
 allowed-tools: Read, Write, Glob, Grep, Agent, Bash, WebSearch, WebFetch
 ---
@@ -25,8 +25,8 @@ Run independent, isolated persona assessments against a RHOAI version transition
 - `--dry-run` — show what would be done without spawning personas
 - `--scope static|runtime` — which phase to run (default: `static`)
   - `static` — build context, spawn persona assessments, produce findings + Runtime Verification Checklists. No cluster access needed.
-  - `runtime` — requires a previous static run. Reads the Runtime Verification Checklists from all persona outputs in the run directory, spawns a verification agent to run them against the live cluster, and updates the final report with confirmed/refuted findings.
-- `--personas sre,engineer,...` — comma-separated list of personas to run (default: all four: `sre,admin,engineer,architect`). Use to run a subset, e.g. `--personas engineer,architect`.
+  - `runtime` — **not yet implemented; deferred for later.** When implemented: requires a previous static run, reads Runtime Verification Checklists from persona outputs, runs them against a live cluster, and updates the report with confirmed/refuted findings.
+- `--personas sre,engineer,...` — comma-separated list of personas to run (default: all four: `admin,engineer,solution-architect,sre`). Use to run a subset, e.g. `--personas engineer,solution-architect`.
 
 Examples:
 - `/rhai.upgrade-assessment --source 2.25 --target 3.3`
@@ -45,16 +45,17 @@ Extract:
 - `--target` — strip leading `v`, normalize to `major.minor` (e.g., `3.3`). **Required.**
 - `--dry-run` — boolean, default false
 - `--scope` — `static` (default) or `runtime`
-- `--personas` — comma-separated list (default: `sre,admin,engineer,architect`)
+- `--personas` — comma-separated list (default: `admin,engineer,solution-architect,sre`)
 
 Validate:
 - **Reject positional arguments**: any token in `$ARGUMENTS` that is not a `--flag` or the value immediately following a known flag is an error. Print usage and stop. Do not silently interpret bare values as source/target.
 - Both `--source` and `--target` are required. If either is missing, print usage and stop.
+- If `--scope runtime` is passed, print an error that runtime scope is not yet implemented and stop.
 - Source must be less than target (no downgrades). EA pre-release suffixes (e.g., `3.4-ea.1`) sort before their release version (`3.4`).
 
 On any validation failure, print:
 ```
-Usage: /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime] [--personas sre,admin,engineer,architect]
+Usage: /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime] [--personas admin,engineer,solution-architect,sre]
 
 Error: <specific problem>
 ```
@@ -83,17 +84,20 @@ If you lose track of the run directory after context compression, find it with `
 After parsing input:
 
 1. Set `scope` to `runtime` if `--scope runtime`, otherwise `static`.
-2. Create the run directory: `.context/tmp/upgrade-assessments/{source}-to-{target}-{timestamp}/`
-3. Initialize state:
+2. Generate run ID: `{source}-to-{target}-{YYYYMMDD-HHMMss}`
+3. Create the run directory: `.context/tmp/upgrade-assessments/{run_id}/`
+4. Initialize state:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/state.py init {run_dir} \
        --source {source} --target {target} --scope {scope} --personas {personas}
    ```
-4. **Step loop** — repeat until done:
+5. Build a flags string from the parsed input: if `--dry-run` is set, `flags=dry-run`; otherwise `flags=` (empty).
+6. **Step loop** — repeat until done:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/steps.py next {run_dir}
+   python3 ${CLAUDE_SKILL_DIR}/scripts/steps.py next {run_dir} --flags {flags}
    ```
-   - If output is `done` → stop.
+   - If output is `done` → stop the loop. This happens when all steps are complete, **or** when a completed step's stop condition matches the current flags (e.g., dry-run step with `--dry-run` flag).
+   - If the command exits with an error → a required artifact is missing. Print the error and stop.
    - Otherwise, parse the output: `{step_number} {step_file}`
    - Mark the step as started:
      ```bash

@@ -1,6 +1,6 @@
 ---
 domain: observability
-personas: [engineer, sre, architect]
+personas: [engineer, solution-architect, sre]
 applies-when: component changes metrics port, adds/removes kube-rbac-proxy sidecar, or modifies ServiceMonitor configuration
 ---
 

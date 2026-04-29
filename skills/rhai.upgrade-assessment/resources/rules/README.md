@@ -7,7 +7,7 @@ Domain-specific rules that upgrade assessment personas load before starting thei
 ```yaml
 ---
 domain: <string>           # Topic area: security, architecture, observability, crd, networking, storage, auth, scheduling
-personas: [<string>, ...]  # Which personas must load this rule: sre, admin, engineer, architect
+personas: [<string>, ...]  # Which personas must load this rule: admin, engineer, solution-architect, sre
 applies-when: <string>     # Natural-language condition describing when this rule is relevant to an upgrade transition
 ---
 ```

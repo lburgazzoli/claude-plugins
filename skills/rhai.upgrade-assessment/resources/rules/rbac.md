@@ -1,6 +1,6 @@
 ---
 domain: security
-personas: [engineer, architect, admin]
+personas: [admin, engineer, solution-architect]
 applies-when: component adds/removes CRDs, controllers change, or auth architecture shifts
 ---
 

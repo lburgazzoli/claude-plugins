@@ -3,6 +3,7 @@ name: Synthesize
 description: Pre-compute report data and spawn synthesis agent to write final report
 scope: [static]
 state-status: synthesis_complete
+requires: [context.md, "{persona}.yaml"]
 ---
 
 # Synthesize

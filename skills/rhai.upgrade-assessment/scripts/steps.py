@@ -9,6 +9,7 @@ Usage:
     python3 scripts/steps.py list --scope static
     python3 scripts/steps.py show 3
     python3 scripts/steps.py next {run_dir}
+    python3 scripts/steps.py next {run_dir} --flags dry-run
 """
 
 import argparse
@@ -56,6 +57,32 @@ def load_steps(scope=None):
     return steps
 
 
+def expand_requires(requires, personas):
+    """Expand {persona} templates in requires list."""
+    expanded = []
+    for req in requires:
+        if "{persona}" in req:
+            for p in personas:
+                expanded.append(req.replace("{persona}", p))
+        else:
+            expanded.append(req)
+    return expanded
+
+
+def validate_artifacts(step_meta, run_dir, personas):
+    """Check that all required artifacts exist. Returns list of missing files."""
+    requires = step_meta.get("requires", [])
+    if not requires:
+        return []
+    expanded = expand_requires(requires, personas)
+    missing = []
+    for artifact in expanded:
+        path = os.path.join(run_dir, artifact)
+        if not os.path.exists(path):
+            missing.append(artifact)
+    return missing
+
+
 def cmd_list(args):
     steps = load_steps(scope=args.scope)
     if not steps:
@@ -90,15 +117,56 @@ def cmd_next(args):
         sys.exit(1)
 
     current_step = state.get("step", 0)
+    current_status = state.get("status", "")
     scope = state.get("scope", "static")
-    steps = load_steps(scope=scope)
+    personas = state.get("personas", [])
+    run_dir = state.get("run_dir", args.run_dir)
 
-    for s in steps:
+    if current_status == "stopped":
+        print("done")
+        return
+
+    flags = set()
+    if args.flags:
+        flags = {f.strip() for f in args.flags.split(",") if f.strip()}
+
+    all_steps = load_steps(scope=scope)
+
+    # Check if the just-completed step has a stop condition that matches
+    if current_status != "running" and current_step > 0:
+        for s in all_steps:
+            if s["step"] == current_step and s.get("stop"):
+                condition = s.get("stop-condition", "unconditional")
+                if condition == "unconditional" or condition in flags:
+                    print("done")
+                    return
+                break
+
+    # Find the next step
+    candidate = None
+    for s in all_steps:
         if s["step"] > current_step:
-            print(f"{s['step']} {s['file']}")
-            return
+            candidate = s
+            break
+        if s["step"] == current_step and current_status == "running":
+            candidate = s
+            break
 
-    print("done")
+    if candidate is None:
+        print("done")
+        return
+
+    # Validate required artifacts before emitting the step
+    missing = validate_artifacts(candidate, run_dir, personas)
+    if missing:
+        for m in missing:
+            print(
+                f"error: step {candidate['step']} requires {m} but it is missing",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+
+    print(f"{candidate['step']} {candidate['file']}")
 
 
 def main():
@@ -116,6 +184,8 @@ def main():
 
     np = sub.add_parser("next", help="Get next step based on current state")
     np.add_argument("run_dir", help="Run directory containing state.yaml")
+    np.add_argument("--flags", default="",
+                    help="Comma-separated run flags (e.g., dry-run)")
 
     args = parser.parse_args()
     {"list": cmd_list, "show": cmd_show, "next": cmd_next}[args.command](args)

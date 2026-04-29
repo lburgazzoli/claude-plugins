@@ -8,7 +8,7 @@ These rules apply to every persona sub-skill. They are non-negotiable.
 
 ## Domain Rules
 
-- Before starting your assessment, read all rule files from the `rules/` subdirectory adjacent to this constitution file, whose frontmatter `personas` list includes your persona identifier (sre, admin, engineer, architect).
+- Before starting your assessment, read all rule files from the `rules/` subdirectory adjacent to this constitution file, whose frontmatter `personas` list includes your persona identifier (admin, engineer, solution-architect, sre).
 - Each rule file has frontmatter with `domain`, `personas`, and `applies-when` fields. Only load rules where your persona is listed and the `applies-when` condition matches the current upgrade transition.
 - Domain rules override general constitution guidance when they are more specific. For example, if a domain rule says "do not flag X," that takes precedence over the adversarial posture.
 
@@ -110,11 +110,11 @@ Place all XREF entries in a dedicated `## Cross-References` section at the end o
 | Migration tooling (odh-cli) gaps | Engineer |
 | Cross-component API impact | Engineer |
 | Auth architecture shift / Gateway API | Engineer |
-| Component removal / addition topology | Architect |
-| Architecture / integration topology | Architect |
-| Custom configuration risk | Architect |
-| Resource quota feasibility | Architect |
-| ADR alignment | Architect |
+| Component removal / addition topology | Solution Architect |
+| Architecture / integration topology | Solution Architect |
+| Custom configuration risk | Solution Architect |
+| Resource quota feasibility | Solution Architect |
+| ADR alignment | Solution Architect |
 | OLM path, OCP compat, backup | Admin |
 | Dependency operator management | Admin |
 | Pre-upgrade checklist / downtime estimation | Admin |
@@ -132,6 +132,7 @@ Place all XREF entries in a dedicated `## Cross-References` section at the end o
 - **Do not report findings for transitions that already completed in a prior version.** If a migration (e.g., embedded-to-external operator, API group rename, component removal) was required in the A→B upgrade, then any cluster running version B has already completed it. Do not re-flag it for the B→C upgrade. When an odh-cli check is gated to a prior transition (e.g., `IsUpgradeFrom2xTo3x`), that gate confirms the transition is not relevant to the current upgrade — treat the gated check as informational context, not as evidence of a current-version prerequisite.
 - **CRD ownership matters for migration risk.** Before rating a CRD removal or API group migration as HIGH, determine whether the CRD is user-created (e.g., InferenceService, TrainJob) or controller-managed (e.g., InferencePool, InferenceModel created by the LLMInferenceService controller). Controller-managed CRDs are recreated automatically during reconciliation — the controller in the target version will create new resources under the correct API group. The risk for controller-managed CRDs is orphan cleanup, not data loss or manual migration. Rate accordingly.
 - **Control-plane restarts are expected during upgrades.** Operator/controller pod restarts are a normal part of the upgrade process and should not be flagged as findings.
+- **Fix-forward only is a platform characteristic, not a finding.** OLM-managed operator upgrades on Kubernetes are inherently irreversible — there is no rollback mechanism. This is true for every RHOAI upgrade and should not be reported as a finding. Instead, state it once as context in the summary block (e.g., "Rollback capability: None (fix-forward only)") and focus findings on *specific* irreversible state changes that are unique to this transition (e.g., a CRD storage migration that cannot be undone, a data format change that the old controller cannot read).
 - **Data-plane restart claims require mandatory verification.** A claim that user workloads (InferenceService pods, Notebook pods, training job pods, pipeline step pods, guardrails pods) will restart during an upgrade is a HIGH-impact finding. False positives here cause unnecessary customer alarm. Before reporting any data-plane restart finding:
 
   1. **Trace the exact restart trigger**: identify the specific code path that changes the pod template. What resource changes? Who reconciles it? Which image reference or spec field is modified? You must be able to answer: "this specific Deployment's pod template changes because field X in resource Y is updated by controller Z."
@@ -178,7 +179,7 @@ Place all XREF entries in a dedicated `## Cross-References` section at the end o
 
 ## Output Structure
 
-- Write your output to `{run_dir}/{persona}.md` where `{persona}` is your persona identifier (sre, admin, engineer, architect).
+- Write your output to `{run_dir}/{persona}.md` where `{persona}` is your persona identifier (admin, engineer, solution-architect, sre).
 - **Do not write to any file in the run directory other than your own `{persona}.md` and `{persona}.yaml`.** In particular, never overwrite `context.md` — it is the orchestrator's shared context and must remain intact for other personas and the synthesis step.
 - Begin with a summary block (risk level, key metrics, recommendation).
 - Follow with numbered findings, each containing: severity, confidence, title, evidence, impact, mitigation, and odh-cli check reference (if applicable). Anomalous findings should include `⚠ VERIFY` and what would resolve the uncertainty.

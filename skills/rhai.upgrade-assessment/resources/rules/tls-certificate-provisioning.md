@@ -1,6 +1,6 @@
 ---
 domain: security
-personas: [engineer, architect, sre]
+personas: [engineer, solution-architect, sre]
 applies-when: component uses TLS certificates for webhooks, conversion webhooks, or service endpoints
 ---
 

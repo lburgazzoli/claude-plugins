@@ -1,8 +1,9 @@
 ---
 name: Report
 description: Print final summary to the user
-scope: [static, runtime]
+scope: [static]
 state-status: complete
+requires: [report.md]
 ---
 
 # Report

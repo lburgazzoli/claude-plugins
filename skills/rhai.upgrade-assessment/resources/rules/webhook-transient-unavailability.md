@@ -1,6 +1,6 @@
 ---
 domain: networking
-personas: [engineer, sre, architect]
+personas: [engineer, solution-architect, sre]
 applies-when: a component adds, changes, or replaces a webhook (mutating, validating, or conversion) during the upgrade
 ---
 

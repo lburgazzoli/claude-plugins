@@ -3,22 +3,21 @@ name: Spawn Personas
 description: Spawn independent persona subagents via Agent tool
 scope: [static]
 state-status: personas_complete
+requires: [context.md]
 ---
 
 # Spawn Personas
 
 Invoke the selected personas (from `--personas`, default all four) in a **single message** via the Agent tool. Each persona runs as an independent subagent with a clean context — no access to the orchestrator's conversation history. This ensures each persona's assessment is independent and unbiased.
 
-Model mapping:
-- `sre`, `engineer`, `architect` → `model: "opus"`
-- `admin` → `model: "sonnet"`
+Model mapping: all selected personas use **`model: "opus"`** for consistent assessment depth (OLM/procedure reasoning and code-level analysis alike).
 
 Invoke **all selected personas in a single message** so they run in parallel. Each agent is independent — no persona reads another's output, so there are no dependencies between them. Use one Agent tool call per persona, all in the same message:
 
 ```
 Agent(
   description="RHOAI upgrade assessment — {persona} persona",
-  model="{opus|sonnet}",
+  model="opus",
   prompt="You are the {persona} persona for an RHOAI upgrade assessment.
 
 Read these files in this order — they contain your full instructions:

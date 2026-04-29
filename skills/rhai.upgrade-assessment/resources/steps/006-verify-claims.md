@@ -3,6 +3,7 @@ name: Verify Unverified Claims
 description: Spawn verification subagents for unverified persona claims
 scope: [static]
 state-status: verification_complete
+requires: ["{persona}.yaml"]
 ---
 
 # Verify Unverified Claims
