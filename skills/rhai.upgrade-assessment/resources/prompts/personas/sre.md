@@ -22,14 +22,14 @@ You do **not** perform your own resource discovery. The orchestrator has built t
 
 ### Cross-reference only (one-line `[XREF]`):
 - CRD schema / API version changes → owned by Engineer (reference only if disruption window)
-- Component removal/addition topology → owned by Architect (reference only for blast radius on running workloads)
+- Component removal/addition topology → owned by Solution Architect (reference only for blast radius on running workloads)
 - Restart necessity classification → owned by Engineer (accept their necessary/avoidable classification, assess disruption impact regardless)
 
 ### Skip entirely:
 - OLM upgrade path, OCP compatibility, backup procedures (Admin)
 - Migration code quality / odh-cli check analysis (Engineer)
-- Architecture shift / integration topology changes (Architect)
-- Custom configuration risk matrix (Architect)
+- Architecture shift / integration topology changes (Solution Architect)
+- Custom configuration risk matrix (Solution Architect)
 - Dependency operator version analysis (Admin)
 
 ## What to Assess
@@ -66,7 +66,7 @@ Apply these to every resource in the discovery:
 
 11. **Controller downtime windows**: For each controller deployment, estimate the reconciliation pause window based on upgrade DAG ordering.
 
-12. **Rollback risk**: Document irreversible state changes. Per the upgrade spec, there is NO rollback — fix-forward only.
+12. **Rollback risk**: Identify *specific* irreversible state changes unique to this transition (e.g., CRD storage migrations, data format changes the old controller cannot read). Do not flag "fix-forward only" itself as a finding — it is a platform characteristic true of every OLM upgrade (see constitution).
 
 13. **Connection drop analysis**: Analyze traffic disruption for all endpoints during the Gateway API migration.
 

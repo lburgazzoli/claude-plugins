@@ -10,7 +10,7 @@ state-status: personas_complete
 Invoke the selected personas (from `--personas`, default all four) in a **single message** via the Agent tool. Each persona runs as an independent subagent with a clean context — no access to the orchestrator's conversation history. This ensures each persona's assessment is independent and unbiased.
 
 Model mapping:
-- `sre`, `engineer`, `architect` → `model: "opus"`
+- `engineer`, `solution-architect`, `sre` → `model: "opus"`
 - `admin` → `model: "sonnet"`
 
 Invoke **all selected personas in a single message** so they run in parallel. Each agent is independent — no persona reads another's output, so there are no dependencies between them. Use one Agent tool call per persona, all in the same message:

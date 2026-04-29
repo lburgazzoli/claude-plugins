@@ -119,12 +119,12 @@ class TestDisagreement:
             {"severity": "MEDIUM", "title": "Gateway API migration",
              "confidence": "high", "finding_id": "gateway-api"},
         ])
-        _write_persona(tmp_path, "architect", findings=[], xrefs=[
+        _write_persona(tmp_path, "solution-architect", findings=[], xrefs=[
             {"topic": "gateway API", "owner": "sre",
              "concern": "breaking change", "severity_hint": "HIGH",
              "owner_finding_id": "gateway-api"},
         ])
-        loaded, _, _, _ = load_personas(str(tmp_path), ["sre", "architect"])
+        loaded, _, _, _ = load_personas(str(tmp_path), ["sre", "solution-architect"])
         disagreements = find_disagreements(loaded)
         assert len(disagreements) == 1
         assert disagreements[0]["severity_a"] == "HIGH"

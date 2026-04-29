@@ -8,7 +8,7 @@ corroboration matches, and disagreement detections.
 Usage:
     python3 scripts/synthesize.py {run_dir} \\
         --source 3.3 --target 3.4 \\
-        --personas sre,admin,engineer,architect
+        --personas admin,engineer,solution-architect,sre
 """
 
 import argparse
@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from metadata import read_metadata, ValidationError
+from metadata import PERSONAS_CSV, ValidationError, read_metadata
 
 
 class _LiteralStr(str):
@@ -254,7 +254,7 @@ def main():
     parser.add_argument("--target", required=True, help="Target RHOAI version")
     parser.add_argument(
         "--personas",
-        default="sre,admin,engineer,architect",
+        default=PERSONAS_CSV,
         help="Comma-separated persona list (default: all four)",
     )
     parser.add_argument(

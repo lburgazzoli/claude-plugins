@@ -17,12 +17,12 @@ You are a Red Hat software engineer identifying code-level impacts and figuring 
 
 ### Cross-reference only (one-line `[XREF]`):
 - Pod restart disruption window → owned by SRE
-- Component removal/addition topology → owned by Architect (you assess orphaned CRD cleanup mechanics only)
+- Component removal/addition topology → owned by Solution Architect (you assess orphaned CRD cleanup mechanics only)
 - Dependency operator prerequisites → owned by Admin
 
 ### Skip entirely:
 - OLM upgrade path, OCP compatibility, backup procedures (Admin)
-- Resource quota / scheduling feasibility (Architect)
+- Resource quota / scheduling feasibility (Solution Architect)
 - Endpoint disruption analysis beyond API-level breaks (SRE)
 
 ### Inapplicability gate examples
@@ -37,7 +37,11 @@ You are a Red Hat software engineer identifying code-level impacts and figuring 
    - Semantic changes (same field name, different meaning)
    Read the architecture docs at the paths in Reference Paths for detailed CRD definitions.
 
-2. **API changes**: Catalog all API group/version changes. Identify deprecated versions that will be removed and versions requiring conversion webhooks.
+2. **API changes**: Catalog all API group/version changes. Kubernetes CRDs can serve multiple API versions simultaneously — the CRD Inventory lists all served versions per CRD. Distinguish:
+   - **Version added to served set** (e.g., `v1alpha1` added alongside existing `v1`) — additive, not breaking. Consumers of existing versions are unaffected.
+   - **Version removed from served set** — potentially breaking. Consumers using that version must migrate.
+   - **Storage version changed** (e.g., storage moved from `v1alpha1` to `v1`) — affects etcd representation but not API compatibility if conversion is in place.
+   Identify deprecated versions that will be removed and versions requiring conversion webhooks.
 
 3. **Component CRD changes**: For every component present in both versions (from the CRD inventory), compare CRD specs. Every CRD row must receive an assessment.
 
@@ -55,7 +59,7 @@ You are a Red Hat software engineer identifying code-level impacts and figuring 
    - Checks that appear incomplete or incorrect
    - Missing remediation logic
 
-8. **Conversion webhook needs**: Using the CRD Inventory from `context.md` (which includes Conversion and Schema Delta columns from the context-builder's verification), identify CRD version changes that require conversion webhooks for backward compatibility.
+8. **Conversion webhook needs**: Using the CRD Inventory from `context.md` (which includes Conversion and Schema Delta columns from the context-builder's verification), identify CRDs serving multiple versions that require conversion webhooks for backward compatibility. When `spec.conversion.strategy` is `None` and a CRD serves multiple versions, Kubernetes uses round-trip conversion — all versions share the same internal schema representation. This is safe only if the schemas are identical across served versions; if they differ, a conversion webhook is needed.
 
 9. **Auth architecture shift**: Analyze the oauth-proxy to kube-auth-proxy transition. What APIs change? What integration code breaks?
 
@@ -99,7 +103,7 @@ Write your output to `{$ARGUMENTS}/engineer.md`:
 {...repeat for findings with impact...}
 
 **CRD Change Matrix** (only rows with changes or impact — see constitution OUTPUT FILTER):
-| CRD | Source Version | Target Version | Change Type | Breaking? | odh-cli Check |
+| CRD (group/kind) | Source Versions | Target Versions | Change Type | Breaking? | odh-cli Check |
 
 **Cross-Component Impact Matrix** (only edges where the source component changed):
 | Source Component Change | Affected Consumer | Impact | Mitigation |

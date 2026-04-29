@@ -97,7 +97,7 @@ judges:
          Engineer owns: CRD schema/API changes, restart root-cause analysis,
          migration tooling gaps, cross-component API impact, auth/Gateway API shifts.
          Engineer should XREF (not full findings) for: pod restart disruption (SRE),
-         component topology (Architect), dependency operators (Admin).
+         component topology (Solution Architect), dependency operators (Admin).
 
       3. **Completeness**: Does the CRD Change Matrix cover CRDs from the context?
          Are there "N resources assessed with no impact — omitted" lines?
@@ -171,9 +171,9 @@ judges:
       2. Are XREFs formatted as: **[XREF]** topic="..." owner="..." concern="..." severity-hint="..."?
       3. Are there full findings (not XREFs) for topics owned by other personas?
          - Pod restart disruption windows → SRE owns this
-         - Component removal topology → Architect owns this
+         - Component removal topology → Solution Architect owns this
          - OLM path / backup / prerequisites → Admin owns this
-         - Resource quotas → Architect owns this
+         - Resource quotas → Solution Architect owns this
       4. When engineer does XREF, does the concern add something the owning persona
          would not cover (different failure mode, different affected system)?
 

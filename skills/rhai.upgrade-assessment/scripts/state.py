@@ -7,7 +7,7 @@ boundary and reads it back if context is lost.
 
 Usage:
     python3 scripts/state.py init {run_dir} --source 3.3 --target 3.4 \
-        --scope static --personas sre,admin,engineer,architect
+        --scope static --personas admin,engineer,solution-architect,sre
     python3 scripts/state.py set {run_dir} --step 4 --status personas_spawned
     python3 scripts/state.py read {run_dir}
 """
@@ -18,6 +18,9 @@ import os
 import sys
 
 import yaml
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from metadata import PERSONAS_CSV
 
 
 STATE_FILE = "state.yaml"
@@ -87,7 +90,7 @@ def main():
     ip.add_argument("--source", required=True)
     ip.add_argument("--target", required=True)
     ip.add_argument("--scope", default="static")
-    ip.add_argument("--personas", default="sre,admin,engineer,architect")
+    ip.add_argument("--personas", default=PERSONAS_CSV)
     ip.add_argument("--step", type=int, default=0)
 
     sp = sub.add_parser("set", help="Update state fields")

@@ -1,6 +1,6 @@
 ---
 domain: crd
-personas: [engineer, architect, sre, admin]
+personas: [admin, engineer, solution-architect, sre]
 applies-when: component CRDs are removed in the target version for components that were deprecated or had their workloads removed in a prior version
 ---
 

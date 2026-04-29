@@ -1,6 +1,6 @@
 ---
 name: rhai.upgrade-assessment
-description: Multi-persona upgrade impact assessment for RHOAI version transitions. Spawns four independent clean-context agent reviewers (SRE, admin, engineer, architect) to assess upgrade risks. Usage - /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime]
+description: Multi-persona upgrade impact assessment for RHOAI version transitions. Spawns four independent clean-context agent reviewers (admin, engineer, solution-architect, SRE) to assess upgrade risks. Usage - /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime]
 user-invocable: true
 allowed-tools: Read, Write, Glob, Grep, Agent, Bash, WebSearch, WebFetch
 ---
@@ -26,7 +26,7 @@ Run independent, isolated persona assessments against a RHOAI version transition
 - `--scope static|runtime` — which phase to run (default: `static`)
   - `static` — build context, spawn persona assessments, produce findings + Runtime Verification Checklists. No cluster access needed.
   - `runtime` — requires a previous static run. Reads the Runtime Verification Checklists from all persona outputs in the run directory, spawns a verification agent to run them against the live cluster, and updates the final report with confirmed/refuted findings.
-- `--personas sre,engineer,...` — comma-separated list of personas to run (default: all four: `sre,admin,engineer,architect`). Use to run a subset, e.g. `--personas engineer,architect`.
+- `--personas sre,engineer,...` — comma-separated list of personas to run (default: all four: `admin,engineer,solution-architect,sre`). Use to run a subset, e.g. `--personas engineer,solution-architect`.
 
 Examples:
 - `/rhai.upgrade-assessment --source 2.25 --target 3.3`
@@ -45,7 +45,7 @@ Extract:
 - `--target` — strip leading `v`, normalize to `major.minor` (e.g., `3.3`). **Required.**
 - `--dry-run` — boolean, default false
 - `--scope` — `static` (default) or `runtime`
-- `--personas` — comma-separated list (default: `sre,admin,engineer,architect`)
+- `--personas` — comma-separated list (default: `admin,engineer,solution-architect,sre`)
 
 Validate:
 - **Reject positional arguments**: any token in `$ARGUMENTS` that is not a `--flag` or the value immediately following a known flag is an error. Print usage and stop. Do not silently interpret bare values as source/target.
@@ -54,7 +54,7 @@ Validate:
 
 On any validation failure, print:
 ```
-Usage: /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime] [--personas sre,admin,engineer,architect]
+Usage: /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime] [--personas admin,engineer,solution-architect,sre]
 
 Error: <specific problem>
 ```

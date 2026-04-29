@@ -20,11 +20,27 @@ import sys
 import yaml
 
 
+def _discover_personas():
+    personas_dir = os.path.join(
+        os.path.dirname(__file__), os.pardir,
+        "resources", "prompts", "personas",
+    )
+    personas_dir = os.path.normpath(personas_dir)
+    return sorted(
+        os.path.splitext(f)[0]
+        for f in os.listdir(personas_dir)
+        if f.endswith(".md")
+    )
+
+
+PERSONAS = _discover_personas()
+PERSONAS_CSV = ",".join(PERSONAS)
+
 SCHEMA = {
     "persona": {
         "type": "string",
         "required": True,
-        "enum": ["sre", "admin", "engineer", "architect"],
+        "enum": PERSONAS,
     },
     "inapplicable": {
         "type": "bool",
@@ -81,7 +97,7 @@ SCHEMA = {
             "owner": {
                 "type": "string",
                 "required": True,
-                "enum": ["sre", "admin", "engineer", "architect"],
+                "enum": PERSONAS,
             },
             "concern": {
                 "type": "string",

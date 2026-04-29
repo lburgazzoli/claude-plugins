@@ -1,6 +1,6 @@
 ---
 domain: networking
-personas: [sre, engineer, architect]
+personas: [engineer, solution-architect, sre]
 applies-when: a component adds or changes a MutatingWebhookConfiguration or ValidatingWebhookConfiguration
 ---
 

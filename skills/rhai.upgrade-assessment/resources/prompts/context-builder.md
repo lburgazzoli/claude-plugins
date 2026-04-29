@@ -142,13 +142,23 @@ Build a unified resource map. For each resource discovered, record which file it
 
 Then compute the diff for each resource category:
 
-**CRD Inventory** — for every component, list every CRD with group, version, kind, scope, and change status (added/removed/version-changed/scope-changed/none).
+**CRD Inventory** — for every component, list every CRD with group, kind, scope, served versions, and change status.
 
 CRD identity rules:
-- A CRD is uniquely identified by **API group + kind**. Never match CRDs by kind alone.
+- A CRD is uniquely identified by **API group + kind**. Never match CRDs by kind alone. Never embed a single API version into the CRD identity — version belongs in the Versions columns.
+- **Multi-version CRDs are normal.** Kubernetes CRDs can serve multiple API versions simultaneously via `spec.versions[]` (e.g., a CRD serving both `v1` and `v1alpha1`). When reading CRD tables from PLATFORM.md or architecture docs, extract **all listed API versions** for a given group+kind, not just the first one. If a doc lists separate entries for `feast.dev/v1/FeatureStore` and `feast.dev/v1alpha1/FeatureStore`, these are the same CRD serving multiple versions — merge them into one row with both versions listed.
+- **Version format**: list all served versions comma-separated, with the storage version marked: e.g., `v1 [storage], v1alpha1`. If the doc does not indicate which is the storage version, mark as `(storage unknown)`.
 - **Resolve conflicting CRD metadata**: precedence order: (1) the doc that references the actual CRD YAML file path wins; (2) the component architecture doc wins over PLATFORM.md; (3) PLATFORM.md is the fallback. When a CRD appears in multiple component docs for the same version with different versions, prefer the doc that owns the CRD definition files. Flag every discrepancy.
-- **Cross-validate source version before reporting changes**: before marking any CRD as `version-changed` or `scope-changed`, apply the precedence rule to the **source** version too — not just the target. If the source PLATFORM.md says one thing (e.g., Namespaced) but the source component doc says another (e.g., Cluster), the PLATFORM.md is wrong. Use the component doc value as the source baseline, then re-compare with the target. If source component doc and target component doc agree → the change status is `none` and the PLATFORM.md error is a discrepancy, not a real change.
+- **Cross-validate source version before reporting changes**: before marking any CRD as `versions-changed` or `scope-changed`, apply the precedence rule to the **source** version too — not just the target. If the source PLATFORM.md says one thing (e.g., Namespaced) but the source component doc says another (e.g., Cluster), the PLATFORM.md is wrong. Use the component doc value as the source baseline, then re-compare with the target. If source component doc and target component doc agree → the change status is `none` and the PLATFORM.md error is a discrepancy, not a real change.
 - When computing the diff, match source and target CRDs by `group + kind`. A CRD that appears in a new API group in the target is an **added** CRD (and the old-group CRD is **removed**), not a "changed" CRD.
+
+Change status values:
+- `added` — CRD exists in target but not source
+- `removed` — CRD exists in source but not target
+- `scope-changed` — CRD scope changed (Namespaced↔Cluster)
+- `versions-changed` — the set of served versions changed (version added or removed from served set)
+- `storage-version-changed` — same served versions but storage designation moved (e.g., storage moved from `v1alpha1` to `v1`)
+- `none` — no change
 
 ### Anomaly Detection — Smell Test
 
@@ -156,10 +166,10 @@ After computing the CRD diff, scan the results for changes that look anomalous. 
 
 **Red flags** (verify before reporting):
 - **Scope change** (Namespaced↔Cluster) — CRD scope changes are extremely rare and breaking at the Kubernetes level. Almost always a doc error rather than a real change. Verify against the actual CRD YAML in the component repo for both source and target versions.
-- **API version downgrade** (v1→v1alpha1, v1beta1→v1alpha1) — versions normally progress forward. A regression strongly suggests a doc error or a different CRD being compared.
+- **Served version dropped** — a version that was served in source is no longer served in target. This is potentially breaking for consumers of that version. Verify against the repo. **Do not confuse with multi-version CRDs**: if source serves `v1` and target serves `v1, v1alpha1`, that's a version *added* (not a red flag). If both source and target serve `v1, v1alpha1`, the change status is `none`. Only flag when a previously-served version disappears from the target.
 - **CRD removal for actively-used kinds** — if a CRD kind that users create (InferenceService, Notebook, etc.) shows as removed, verify it's not a PLATFORM.md omission. Controller-managed CRDs can be removed (they get recreated), but user-facing CRDs should never silently disappear.
 - **API group migration** — a kind moving from one API group to another (e.g., serving.kserve.io → inference.networking.k8s.io) is unusual. Verify the old-group CRD is actually gone and the new-group CRD exists in the component repo.
-- **Version jump skipping stages** (v1alpha1→v1, skipping v1beta1) — possible but unusual. Verify the CRD actually serves the claimed versions.
+- **Incomplete version data** — when a doc lists only one version for a CRD but another doc or PLATFORM.md lists additional versions for the same group+kind, the single-version doc may be incomplete. Apply precedence rules to resolve, and verify against the repo if inconsistency persists.
 
 **Verification procedure for red flags** (mandatory — cannot be resolved by reading architecture docs alone):
 1. Clone the component repo at both source and target branches (use architecture doc metadata for repo URL and branch)
@@ -185,7 +195,7 @@ After computing the CRD diff, scan the results for changes that look anomalous. 
 
 ### 2b-ii. CRD Version Compatibility Verification
 
-For every CRD in the CRD Inventory with change status `version-changed`, and for any CRD where the architecture doc and PLATFORM.md disagree on version or scope, verify the actual CRD definition from the component repo.
+For every CRD in the CRD Inventory with change status `versions-changed`, `storage-version-changed`, or `scope-changed`, and for any CRD where the architecture doc and PLATFORM.md disagree on versions or scope, verify the actual CRD definition from the component repo.
 
 1. **Clone the component repo** at the correct branch. Read the architecture doc's metadata section (top of file) for the exact repository URL and branch. Use those coordinates — do not guess branch names. Clone following **CLAUDE.md → Repository cloning and refs**.
 
@@ -198,20 +208,27 @@ For every CRD in the CRD Inventory with change status `version-changed`, and for
    
    The overlay patches upstream configurations for the RHOAI distribution (e.g., replacing cert-manager with OpenShift service-ca, removing upstream-only resources). The overlay is authoritative.
 
-2. **Check conversion strategy**: read the CRD YAML and extract `spec.conversion.strategy`.
-   - `Webhook` — verify the referenced webhook Service and caBundle/cert-manager annotation exist. Record: `conversion: webhook, service: {name}`.
-   - `None` (or absent) — Kubernetes round-trips between versions. Record: `conversion: none (round-trip)`.
+2. **Extract all served versions**: read the CRD YAML and extract the full `spec.versions[]` array. For each entry, record `name`, `served` (true/false), and `storage` (true/false). The served versions in the CRD YAML are authoritative — architecture docs may list only a subset. If the doc listed one version but the CRD YAML shows multiple served versions, update the inventory to include all served versions and file a discrepancy (doc is incomplete).
 
-3. **Diff OpenAPI schemas**: extract the `spec.versions[].schema.openAPIV3Schema` for both versions from the CRD YAML. Compare the top-level `.spec` properties:
+3. **Check conversion strategy**: read the CRD YAML and extract `spec.conversion.strategy`.
+   - `Webhook` — verify the referenced webhook Service and caBundle/cert-manager annotation exist. Record: `conversion: webhook, service: {name}`.
+   - `None` (or absent) — Kubernetes round-trips between versions. If the CRD serves multiple versions with `conversion: None`, all versions share the same internal representation. Record: `conversion: none (round-trip)`.
+
+4. **Diff OpenAPI schemas**: for each pair of served versions within the same CRD, and across source/target for the same version, extract `spec.versions[].schema.openAPIV3Schema` and compare the top-level `.spec` properties:
    - **Identical schemas** → Record: `schema: identical`.
    - **Additive only** → Record: `schema: additive — {list of new fields}`.
    - **Breaking** → Record: `schema: breaking — {list of breaking changes}`.
 
-4. **Add results to the CRD Inventory** as two extra columns: `Conversion` and `Schema Delta`.
+5. **Compare version sets between source and target**: diff the complete served version sets, not just a single version string:
+   - Versions added to served set (present in target, absent in source)
+   - Versions removed from served set (present in source, absent in target)
+   - Storage version changes (same versions but `storage: true` moved to a different version)
 
-5. **Report discrepancies**: if the repo contradicts the architecture-context doc, record per **Discrepancy Reporting** above.
+6. **Add results to the CRD Inventory** as two extra columns: `Conversion` and `Schema Delta`.
 
-6. **Keep component repo clones** for reuse by persona subagents. Do not remove them. Record cloned repo paths in the Source Map. If a clone already exists, update it (`git fetch && git checkout <branch> && git pull --ff-only`) instead of re-cloning.
+7. **Report discrepancies**: if the repo contradicts the architecture-context doc, record per **Discrepancy Reporting** above.
+
+8. **Keep component repo clones** for reuse by persona subagents. Do not remove them. Record cloned repo paths in the Source Map. If a clone already exists, update it (`git fetch && git checkout <branch> && git pull --ff-only`) instead of re-cloning.
 
 If the component repo cannot be cloned (private, missing branch), mark both columns as `unverified`.
 
@@ -309,7 +326,7 @@ Write `context.md` with all data from Steps 1-3. The file must contain:
 ## Resource Discovery (Static)
 
 ### CRD Inventory
-| Component | CRD (group/version/kind) | Scope | Source | Target | Change | Conversion | Schema Delta |
+| Component | CRD (group/kind) | Scope | Source Versions | Target Versions | Change | Conversion | Schema Delta |
 
 ### Deployment Inventory
 | Component | Deployment/DaemonSet/StatefulSet | Type | Source | Target | Change |
