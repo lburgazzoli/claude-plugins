@@ -8,12 +8,30 @@ requires: [context-draft.md, discrepancies.yaml]
 
 # Verify and Cross-Validate CRDs
 
-Follow **Phase 2** of `${CLAUDE_SKILL_DIR}/resources/prompts/context-builder.md`. This will:
-- Read `context-draft.md` from the run directory
-- Run anomaly detection (smell test) on the raw CRD Inventory
-- For each red flag: clone the component repo, verify against actual CRD YAML
-- Extract full `spec.versions[]` arrays, verify scope, check conversion strategy
+Spawn a single Opus agent to execute Phase 2 of the context builder:
+
+```
+Agent(
+  description="RHOAI upgrade assessment — context builder phase 2",
+  model="opus",
+  prompt="You are verifying and cross-validating CRDs for an RHOAI upgrade assessment.
+
+Read these files in this order:
+1. ${CLAUDE_SKILL_DIR}/resources/prompts/context-builder.md — read Shared Rules + Phase 2 only
+2. The project CLAUDE.md at the vault root — for repository cloning and refs rules
+3. {run_dir}/context-draft.md — the raw inventories from Phase 1
+
+Follow Phase 2 instructions to:
+- Run anomaly detection on the CRD Inventory
+- Clone component repos and verify CRDs against actual YAML
+- Extract spec.versions[] arrays, check conversion strategy
 - Diff OpenAPI schemas for version-changed CRDs
-- Update CRD Inventory in `context-draft.md` with Conversion and Schema Delta columns
-- Append discrepancies to `discrepancies.yaml`
-- Run dependency operator disruption analysis (web search for changelogs)
+- Update CRD Inventory in context-draft.md with Conversion and Schema Delta columns
+- Append discrepancies to discrepancies.yaml
+- Run dependency operator disruption analysis
+
+Run directory: {run_dir}
+Source version: {source}
+Target version: {target}"
+)
+```

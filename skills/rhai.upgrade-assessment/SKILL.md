@@ -1,6 +1,7 @@
 ---
 name: rhai.upgrade-assessment
 description: Multi-persona upgrade impact assessment for RHOAI version transitions. Spawns four independent clean-context agent reviewers (admin, engineer, solution-architect, SRE) to assess upgrade risks. Usage - /rhai.upgrade-assessment --source <version> --target <version> [--dry-run] [--scope static|runtime]
+model: claude-sonnet-4-6
 user-invocable: true
 allowed-tools: Read, Write, Glob, Grep, Agent, Bash, WebSearch, WebFetch
 ---
@@ -8,6 +9,8 @@ allowed-tools: Read, Write, Glob, Grep, Agent, Bash, WebSearch, WebFetch
 # RHOAI Upgrade Assessment
 
 Run independent, isolated persona assessments against a RHOAI version transition. Each persona has a different domain lens. No persona sees another's output. Disagreements are preserved, not harmonized.
+
+**Model**: The orchestrator (this file) is a lightweight loop controller — it parses flags, manages state, and dispatches work. All analytical work (context building, persona assessments, synthesis) is delegated to Opus subagents via the Agent tool. The orchestrator can run on any model, including Sonnet.
 
 **References** — read before starting:
 - **`CLAUDE.md` (vault root)** — **Repository cloning and refs**
@@ -68,10 +71,15 @@ This skill is long-running (context build + parallel agents + verification + syn
 ```bash
 # Initialize after creating the run directory (first step)
 python3 ${CLAUDE_SKILL_DIR}/scripts/state.py init {run_dir} \
-    --source {source} --target {target} --scope {scope} --personas {personas}
+    --source {source} \
+    --target {target} \
+    --scope {scope} \
+    --personas {personas}
 
 # Update at each step transition
-python3 ${CLAUDE_SKILL_DIR}/scripts/state.py set {run_dir} --step {N} --status {status}
+python3 ${CLAUDE_SKILL_DIR}/scripts/state.py set {run_dir} \
+    --step {N} \
+    --status {status}
 
 # Read back if context is lost
 python3 ${CLAUDE_SKILL_DIR}/scripts/state.py read {run_dir}
@@ -84,17 +92,28 @@ If you lose track of the run directory after context compression, find it with `
 After parsing input:
 
 1. Set `scope` to `runtime` if `--scope runtime`, otherwise `static`.
-2. Generate run ID: `{source}-to-{target}-{YYYYMMDD-HHMMss}`
+2. Print run configuration:
+   ```
+   Source:   {source}
+   Target:   {target}
+   Scope:    {scope}
+   Personas: {personas}
+   ```
+3. Generate run ID: `{source}-to-{target}-{YYYYMMDD-HHMMss}`
 3. Create the run directory: `.context/tmp/upgrade-assessments/{run_id}/`
 4. Initialize state:
    ```bash
    python3 ${CLAUDE_SKILL_DIR}/scripts/state.py init {run_dir} \
-       --source {source} --target {target} --scope {scope} --personas {personas}
+       --source {source} \
+       --target {target} \
+       --scope {scope} \
+       --personas {personas}
    ```
 5. Build a flags string from the parsed input: if `--dry-run` is set, `flags=dry-run`; otherwise `flags=` (empty).
 6. **Step loop** — repeat until done:
    ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/steps.py next {run_dir} --flags {flags}
+   python3 ${CLAUDE_SKILL_DIR}/scripts/steps.py next {run_dir} \
+       --flags {flags}
    ```
    - If output is `done` → stop the loop. This happens when all steps are complete, **or** when a completed step's stop condition matches the current flags (e.g., dry-run step with `--dry-run` flag).
    - If the command exits with an error → a required artifact is missing. Print the error and stop.
@@ -102,12 +121,14 @@ After parsing input:
    - Mark the step as started:
      ```bash
      python3 ${CLAUDE_SKILL_DIR}/scripts/state.py set {run_dir} \
-         --step {step_number} --status running
+         --step {step_number} \
+         --status running
      ```
    - Read `${CLAUDE_SKILL_DIR}/{step_file}` and follow its instructions.
    - After completing the step, read the `state-status` from the step file's YAML frontmatter and update state:
      ```bash
      python3 ${CLAUDE_SKILL_DIR}/scripts/state.py set {run_dir} \
-         --step {step_number} --status {state-status}
+         --step {step_number} \
+         --status {state-status}
      ```
    - Continue to the next iteration.
