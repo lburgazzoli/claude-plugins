@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Read(**)",
       "Bash(acli jira workitem link list *)",
       "Bash(acli jira workitem search *)",
       "Bash(acli jira workitem view *)",
@@ -16,7 +17,11 @@
       "Bash(gws schema *)",
       "Bash(jq *)",
       "Bash(yq *)",
-      "Read(**)",
+      "Bash(python3 *skills/rhai.upgrade-assessment/scripts/*)",
+      "Bash(podman run *)",
+      "Bash(git rev-parse *)",
+      "Bash(git mv *)",
+      "Bash(git clone *)",
       "WebFetch(domain:arxiv.org)",
       "WebFetch(domain:cursor.com)",
       "WebFetch(domain:docs.anthropic.com)",
@@ -28,11 +33,7 @@
       "WebFetch(domain:scholar.google.com)",
       "WebFetch(domain:thenewstack.io)",
       "WebFetch(domain:www.cncf.io)",
-      "WebSearch",
-      "Bash(podman run *)",
-      "Bash(git rev-parse *)",
-      "Bash(python3 *skills/rhai.upgrade-assessment/scripts/*)",
-      "Bash(git mv *)"
+      "WebSearch"
     ]
   },
   "enableAllProjectMcpServers": true,

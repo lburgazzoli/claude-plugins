@@ -71,6 +71,15 @@ MCP servers are configured via `.mcp.json` at the plugin root. They:
 1. Create `.mcp.json` at the plugin root
 2. Define server configuration with command and args
 
+## Clarification Rule
+
+When a request is unclear, ambiguous, or missing critical context — **stop and ask** before proceeding. Do not guess intent, fill in gaps with assumptions, or start work that may need to be redone. Specifically:
+
+- If the scope, target, or expected outcome is not obvious, ask for clarification
+- If multiple valid interpretations exist, state them briefly and ask which one applies
+- If dependencies or constraints are missing (e.g., which repo, which version, which component), ask before acting
+- One focused clarifying question is better than a long list — prioritize what unblocks progress
+
 ## Development Guidelines
 
 - **Repository cloning**: when a repo needs to be cloned, always clone into `.context/repos/<repo-name>` with `--depth 1 --single-branch` (default branch only, shallow clone)
