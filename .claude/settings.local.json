@@ -31,7 +31,8 @@
       "WebSearch",
       "Bash(podman run *)",
       "Bash(git rev-parse *)",
-      "Bash(python3 *skills/rhai.upgrade-assessment/scripts/*)"
+      "Bash(python3 *skills/rhai.upgrade-assessment/scripts/*)",
+      "Bash(git mv *)"
     ]
   },
   "enableAllProjectMcpServers": true,
